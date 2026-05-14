@@ -7,10 +7,15 @@ const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const apiClient = axios.create({
   baseURL: 'https://v3.football.api-sports.io',
   timeout: 10000,
-  headers: {
-    'x-apisports-key': process.env.FOOTBALL_API_KEY,
-  },
 });
+
+apiClient.interceptors.request.use(config => {
+  config.headers = {
+    'x-apisports-key': process.env.FOOTBALL_API_KEY,
+  };
+  return config;
+});
+
 
 
 const LEAGUE_MAP = {
