@@ -16,36 +16,29 @@ apiClient.interceptors.request.use(config => {
   return config;
 });
 
-
-
 const LEAGUE_MAP = {
-  pl: { id: 39,  name: 'Premier League',   flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  cl: { id: 2,   name: 'Champions League', flag: '⭐' },
-  ll: { id: 140, name: 'La Liga',          flag: '🇪🇸' },
-  bl: { id: 78,  name: 'Bundesliga',       flag: '🇩🇪' },
-  sa: { id: 135, name: 'Serie A',          flag: '🇮🇹' },
-  l1: { id: 61,  name: 'Ligue 1',          flag: '🇫🇷' },
+  39:  { key: 'pl', name: 'Premier League',   flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  2:   { key: 'cl', name: 'Champions League', flag: '⭐' },
+  140: { key: 'll', name: 'La Liga',          flag: '🇪🇸' },
+  78:  { key: 'bl', name: 'Bundesliga',       flag: '🇩🇪' },
+  135: { key: 'sa', name: 'Serie A',          flag: '🇮🇹' },
+  61:  { key: 'l1', name: 'Ligue 1',          flag: '🇫🇷' },
+  3:   { key: 'uel', name: 'UEFA Europa',     flag: '🟠' },
+  848: { key: 'uecl', name: 'UEFA Conf',      flag: '🔵' },
+  88:  { key: 'ere', name: 'Eredivisie',      flag: '🇳🇱' },
+  94:  { key: 'pl2', name: 'Primeira Liga',   flag: '🇵🇹' },
 };
 
 function formatDate(date) {
   return new Date(date).toISOString().split('T')[0];
 }
 
-async function cachedGet(endpoint, params, ttl) {
-  const key = `${endpoint}:${JSON.stringify(params)}`;
-  const cached = cache.get(key);
-  if (cached !== undefined) return cached;
-  const { data } = await apiClient.get(endpoint, { params });
-  cache.set(key, data, ttl || 300);
-  return data;
-}
-
-function normalizeFixture(fix, leagueKey) {
+function normalizeFixture(fix) {
   const { fixture, league, teams, goals } = fix;
-  const leagueMeta = LEAGUE_MAP[leagueKey] || {};
+  const leagueMeta = LEAGUE_MAP[league.id] || {};
   return {
     id: fixture.id,
-    leagueKey: leagueKey || 'other',
+    leagueKey: leagueMeta.key || 'other',
     leagueName: league.name,
     leagueFlag: leagueMeta.flag || '⚽',
     date: fixture.date,
@@ -77,27 +70,29 @@ async function getFixturesByDate(dateStr) {
   const cached = cache.get(cKey);
   if (cached) return cached;
 
-  const season = 2025;
-  const requests = Object.entries(LEAGUE_MAP).map(async ([key, league]) => {
-    try {
-      const data = await cachedGet('/fixtures', {
-        league: league.id, date, season,
-      });
-      return (data.response || []).map(f => normalizeFixture(f, key));
-    } catch (err) {
-      logger.error(`Failed to fetch ${key}:`, err.message);
+  try {
+    logger.info(`Fetching fixtures for date: ${date}`);
+    const { data } = await apiClient.get('/fixtures', {
+      params: { date },
+    });
+
+    if (data.errors && Object.keys(data.errors).length > 0) {
+      logger.error('API errors:', data.errors);
       return [];
     }
-  });
 
-  const results = await Promise.allSettled(requests);
-  const fixtures = results
-    .filter(r => r.status === 'fulfilled')
-    .flatMap(r => r.value)
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+    const fixtures = (data.response || [])
+      .filter(fix => LEAGUE_MAP[fix.league.id])
+      .map(fix => normalizeFixture(fix))
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-  cache.set(cKey, fixtures, 300);
-  return fixtures;
+    logger.info(`Found ${fixtures.length} fixtures for ${date}`);
+    cache.set(cKey, fixtures, 300);
+    return fixtures;
+  } catch (err) {
+    logger.error('getFixturesByDate failed:', err.message);
+    return [];
+  }
 }
 
 async function getTeamForm(teamId, last = 5) {
@@ -106,9 +101,10 @@ async function getTeamForm(teamId, last = 5) {
   if (cached) return cached;
 
   try {
-    const data = await cachedGet('/fixtures', {
-      team: teamId, last, status: 'FT',
+    const { data } = await apiClient.get('/fixtures', {
+      params: { team: teamId, last, status: 'FT' },
     });
+
     const form = (data.response || []).map(fix => {
       const isHome = fix.teams.home.id === teamId;
       const scored = isHome ? fix.goals.home : fix.goals.away;
@@ -141,8 +137,8 @@ async function getH2H(homeId, awayId, last = 5) {
   if (cached) return cached;
 
   try {
-    const data = await cachedGet('/fixtures/headtohead', {
-      h2h: `${homeId}-${awayId}`, last, status: 'FT',
+    const { data } = await apiClient.get('/fixtures/headtohead', {
+      params: { h2h: `${homeId}-${awayId}`, last },
     });
 
     const matches = (data.response || []).map(fix => ({
