@@ -753,9 +753,10 @@ async function loadFixtures() {
     state.fixturesLoading = false;
     renderMatchList();
     // Auto-fetch predictions for visible fixtures (up to 8)
-    state.fixtures.slice(0, 8).forEach(f => {
-      if (!state.predictions[f.id]) loadPrediction(f);
-    });
+    state.fixtures.forEach(f => {
+  if (!state.predictions[f.id]) loadPrediction(f);
+});
+
   }
 }
 
