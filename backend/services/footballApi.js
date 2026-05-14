@@ -14,12 +14,12 @@ const apiClient = axios.create({
 });
 
 const LEAGUE_MAP = {
-  pl: { id: 39,  name: 'Premier League',    flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  cl: { id: 2,   name: 'Champions League',  flag: '⭐' },
-  ll: { id: 140, name: 'La Liga',           flag: '🇪🇸' },
-  bl: { id: 78,  name: 'Bundesliga',        flag: '🇩🇪' },
-  sa: { id: 135, name: 'Serie A',           flag: '🇮🇹' },
-  l1: { id: 61,  name: 'Ligue 1',           flag: '🇫🇷' },
+  pl: { id: 39,  name: 'Premier League',   flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  cl: { id: 2,   name: 'Champions League', flag: '⭐' },
+  ll: { id: 140, name: 'La Liga',          flag: '🇪🇸' },
+  bl: { id: 78,  name: 'Bundesliga',       flag: '🇩🇪' },
+  sa: { id: 135, name: 'Serie A',          flag: '🇮🇹' },
+  l1: { id: 61,  name: 'Ligue 1',          flag: '🇫🇷' },
 };
 
 function formatDate(date) {
@@ -49,9 +49,20 @@ function normalizeFixture(fix, leagueKey) {
     }),
     status: fixture.status.short,
     elapsed: fixture.status.elapsed,
-    home: { id: teams.home.id, name: teams.home.name, logo: teams.home.logo },
-    away: { id: teams.away.id, name: teams.away.name, logo: teams.away.logo },
-    goals: { home: goals.home, away: goals.away },
+    home: {
+      id: teams.home.id,
+      name: teams.home.name,
+      logo: teams.home.logo,
+    },
+    away: {
+      id: teams.away.id,
+      name: teams.away.name,
+      logo: teams.away.logo,
+    },
+    goals: {
+      home: goals.home,
+      away: goals.away,
+    },
   };
 }
 
@@ -64,7 +75,9 @@ async function getFixturesByDate(dateStr) {
   const season = new Date().getFullYear();
   const requests = Object.entries(LEAGUE_MAP).map(async ([key, league]) => {
     try {
-      const data = await cachedGet('/fixtures', { league: league.id, date, season });
+      const data = await cachedGet('/fixtures', {
+        league: league.id, date, season,
+      });
       return (data.response || []).map(f => normalizeFixture(f, key));
     } catch (err) {
       logger.error(`Failed to fetch ${key}:`, err.message);
@@ -88,7 +101,9 @@ async function getTeamForm(teamId, last = 5) {
   if (cached) return cached;
 
   try {
-    const data = await cachedGet('/fixtures', { team: teamId, last, status: 'FT' });
+    const data = await cachedGet('/fixtures', {
+      team: teamId, last, status: 'FT',
+    });
     const form = (data.response || []).map(fix => {
       const isHome = fix.teams.home.id === teamId;
       const scored = isHome ? fix.goals.home : fix.goals.away;
@@ -101,10 +116,59 @@ async function getTeamForm(teamId, last = 5) {
 
     const summary = {
       form: form.map(f => f.result),
-      avgScored: form.length ? +(form.reduce((s, f) => s + f.scored, 0) / form.length).toFixed(2) : 0,
-      avgConceded: form.length ? +(form.reduce((s, f) => s + f.conceded, 0) / form.length).toFixed(2) : 0,
+      avgScored: form.length
+        ? +(form.reduce((s, f) => s + f.scored, 0) / form.length).toFixed(2) : 0,
+      avgConceded: form.length
+        ? +(form.reduce((s, f) => s + f.conceded, 0) / form.length).toFixed(2) : 0,
     };
 
     cache.set(cKey, summary, 600);
     return summary;
   } catch (err) {
+    logger.error('getTeamForm failed:', err.message);
+    return null;
+  }
+}
+
+async function getH2H(homeId, awayId, last = 5) {
+  const cKey = `h2h:${homeId}:${awayId}`;
+  const cached = cache.get(cKey);
+  if (cached) return cached;
+
+  try {
+    const data = await cachedGet('/fixtures/headtohead', {
+      h2h: `${homeId}-${awayId}`, last, status: 'FT',
+    });
+
+    const matches = (data.response || []).map(fix => ({
+      homeGoals: fix.goals.home,
+      awayGoals: fix.goals.away,
+      totalGoals: (fix.goals.home || 0) + (fix.goals.away || 0),
+    }));
+
+    const summary = {
+      matches,
+      avgGoals: matches.length
+        ? +(matches.reduce((s, m) => s + m.totalGoals, 0) / matches.length).toFixed(2) : 0,
+      homeWins: matches.filter(m => m.homeGoals > m.awayGoals).length,
+      draws: matches.filter(m => m.homeGoals === m.awayGoals).length,
+      awayWins: matches.filter(m => m.awayGoals > m.homeGoals).length,
+      bttsCount: matches.filter(m => m.homeGoals > 0 && m.awayGoals > 0).length,
+      over25Count: matches.filter(m => m.totalGoals > 2).length,
+    };
+
+    cache.set(cKey, summary, 3600);
+    return summary;
+  } catch (err) {
+    logger.error('getH2H failed:', err.message);
+    return null;
+  }
+}
+
+module.exports = {
+  getFixturesByDate,
+  getTeamForm,
+  getH2H,
+  LEAGUE_MAP,
+  formatDate,
+};
