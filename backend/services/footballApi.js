@@ -5,13 +5,13 @@ const logger = require('../utils/logger');
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const apiClient = axios.create({
-  baseURL: 'https://api-football-v1.p.rapidapi.com/v3',
+  baseURL: 'https://v3.football.api-sports.io',
   timeout: 10000,
   headers: {
-    'X-RapidAPI-Key': process.env.FOOTBALL_API_KEY,
-    'X-RapidAPI-Host': process.env.FOOTBALL_API_HOST || 'api-football-v1.p.rapidapi.com',
+    'x-apisports-key': process.env.FOOTBALL_API_KEY,
   },
 });
+
 
 const LEAGUE_MAP = {
   pl: { id: 39,  name: 'Premier League',   flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
