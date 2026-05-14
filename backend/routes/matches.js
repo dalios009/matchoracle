@@ -1,6 +1,20 @@
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 const { getFixturesByDate, formatDate } = require('../services/footballApi');
+
+router.get('/test-api', async (req, res) => {
+  try {
+    const response = await axios.get('https://v3.football.api-sports.io/status', {
+      headers: {
+        'x-apisports-key': process.env.FOOTBALL_API_KEY,
+      },
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/', async (req, res, next) => {
   try {
@@ -10,7 +24,6 @@ router.get('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
     }
     if (!targetDate) targetDate = formatDate(new Date());
-
     let fixtures = await getFixturesByDate(targetDate);
     if (league && league !== 'all') {
       fixtures = fixtures.filter(f => f.leagueKey === league);
@@ -31,19 +44,6 @@ router.get('/:id', async (req, res, next) => {
     res.json(fixture);
   } catch (err) {
     next(err);
-  }
-});
-router.get('/test-api', async (req, res, next) => {
-  try {
-    const axios = require('axios');
-    const response = await axios.get('https://v3.football.api-sports.io/status', {
-      headers: {
-        'x-apisports-key': process.env.FOOTBALL_API_KEY,
-      },
-    });
-    res.json(response.data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
