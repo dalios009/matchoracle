@@ -33,5 +33,18 @@ router.get('/:id', async (req, res, next) => {
     next(err);
   }
 });
+router.get('/test-api', async (req, res, next) => {
+  try {
+    const axios = require('axios');
+    const response = await axios.get('https://v3.football.api-sports.io/status', {
+      headers: {
+        'x-apisports-key': process.env.FOOTBALL_API_KEY,
+      },
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;
