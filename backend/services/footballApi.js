@@ -72,7 +72,7 @@ async function getFixturesByDate(dateStr) {
   const cached = cache.get(cKey);
   if (cached) return cached;
 
-  const season = new Date().getFullYear();
+  const season = 2025;
   const requests = Object.entries(LEAGUE_MAP).map(async ([key, league]) => {
     try {
       const data = await cachedGet('/fixtures', {
