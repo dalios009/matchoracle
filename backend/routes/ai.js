@@ -23,9 +23,23 @@ router.post('/analyse', aiLimiter, async (req, res, next) => {
     const cached = aiCache.get(cKey);
     if (cached) return res.json(cached);
 
-    const fixtures = await getFixturesByDate(formatDate(new Date()));
-    const fixture = fixtures.find(f => f.id === parseInt(fixtureId));
-    if (!fixture) return res.status(404).json({ error: 'Fixture not found.' });
+    const today = formatDate(new Date());
+let fixtures = await getFixturesByDate(today);
+
+// Also check yesterday and tomorrow in case of timezone differences
+if (!fixtures.find(f => f.id === parseInt(fixtureId))) {
+  const yesterday = formatDate(new Date(Date.now() - 86400000));
+  const tomorrow = formatDate(new Date(Date.now() + 86400000));
+  const [y, t] = await Promise.all([
+    getFixturesByDate(yesterday),
+    getFixturesByDate(tomorrow),
+  ]);
+  fixtures = [...fixtures, ...y, ...t];
+}
+
+const fixture = fixtures.find(f => f.id === parseInt(fixtureId));
+if (!fixture) return res.status(404).json({ error: 'Fixture not found.' });
+
 
     const [homeForm, awayForm, h2h] = await Promise.allSettled([
       getTeamForm(fixture.home.id, 5),
