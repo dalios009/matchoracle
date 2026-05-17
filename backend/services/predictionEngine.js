@@ -212,7 +212,7 @@ function calcConfidence(homeProfile, awayProfile, probs) {
   return Math.round(Math.min(87, Math.max(45, conf)));
 }
 
-function generatePrediction(fixture, homeFormData, awayFormData, h2hData) {
+function generatePrediction(fixture, homeFormData, awayFormData, h2hData, oddsData) {
   try {
     const homeId = fixture.home?.id;
     const awayId = fixture.away?.id;
@@ -222,50 +222,95 @@ function generatePrediction(fixture, homeFormData, awayFormData, h2hData) {
     const homeProfile = { ...getProfile(homeId), id: homeId, name: homeName };
     const awayProfile = { ...getProfile(awayId), id: awayId, name: awayName };
 
-    // Use real form data if available to adjust profiles
-    if (homeFormData?.avgScored) {
-      homeProfile.attack = (homeProfile.attack + homeFormData.avgScored * 2.5) / 2;
-    }
-    if (awayFormData?.avgScored) {
-      awayProfile.attack = (awayProfile.attack + awayFormData.avgScored * 2.5) / 2;
+    let probs;
+
+    // Use REAL bookmaker odds if available — much more accurate
+    if (oddsData?.probabilities) {
+      probs = {
+        home: oddsData.probabilities.home,
+        draw: oddsData.probabilities.draw,
+        away: oddsData.probabilities.away,
+        hXG: oddsData.probabilities.home > 55 ? 1.6 : oddsData.probabilities.home > 45 ? 1.3 : 1.0,
+        aXG: oddsData.probabilities.away > 55 ? 1.6 : oddsData.probabilities.away > 45 ? 1.3 : 1.0,
+      };
+    } else {
+      // Fall back to model
+      if (homeFormData?.avgScored) {
+        homeProfile.attack = (homeProfile.attack + homeFormData.avgScored * 2.5) / 2;
+      }
+      if (awayFormData?.avgScored) {
+        awayProfile.attack = (awayProfile.attack + awayFormData.avgScored * 2.5) / 2;
+      }
+      probs = calcProbabilities(homeProfile, awayProfile);
     }
 
-    const probs = calcProbabilities(homeProfile, awayProfile);
-    const markets = calcBettingMarkets(probs, probs.hXG, probs.aXG, homeProfile, awayProfile);
+    // Use real odds markets if available
+    let markets;
+    if (oddsData?.markets) {
+      const om = oddsData.markets;
+      markets = {
+        over25:   om.over25   || calcBettingMarkets(probs, probs.hXG, probs.aXG, homeProfile, awayProfile).over25,
+        under25:  om.under25  || calcBettingMarkets(probs, probs.hXG, probs.aXG, homeProfile, awayProfile).under25,
+        over15:   om.over25 ? Math.min(90, om.over25 + 18) : 72,
+        btts:     om.bttsYes  || calcBettingMarkets(probs, probs.hXG, probs.aXG, homeProfile, awayProfile).btts,
+        nobtts:   om.bttsNo   || (100 - (om.bttsYes || 50)),
+        dcHome:   Math.min(93, probs.home + probs.draw),
+        dcAway:   Math.min(90, probs.away + probs.draw),
+        ahHome:   Math.round(probs.home * 0.88),
+        homeCS:   Math.round(Math.max(12, 55 - awayProfile.attack * 3)),
+        awayCS:   Math.round(Math.max(10, 48 - homeProfile.attack * 3)),
+        htUnder:  65,
+      };
+    } else {
+      markets = calcBettingMarkets(probs, probs.hXG, probs.aXG, homeProfile, awayProfile);
+    }
+
     const bestBets = getBestBets(probs, markets, homeName, awayName);
     const insights = getInsights(probs, markets, probs.hXG, probs.aXG, homeProfile, awayProfile, homeName, awayName);
-    const confidence = calcConfidence(homeProfile, awayProfile, probs);
 
-    // Score prediction — use xG rounded, not always 1-1
-    const homeGoals = Math.round(probs.hXG);
-    const awayGoals = Math.round(probs.aXG);
+    // Higher confidence when using real odds
+    const confidence = oddsData
+      ? Math.min(88, calcConfidence(homeProfile, awayProfile, probs) + 12)
+      : calcConfidence(homeProfile, awayProfile, probs);
+
+    const homeGoals = Math.round(probs.hXG || 1.2);
+    const awayGoals = Math.round(probs.aXG || 1.0);
+
+    // Add bookmaker info if available
+    const oddsInfo = oddsData ? {
+      source: oddsData.bookmaker,
+      homeOdds: oddsData.odds?.home,
+      drawOdds: oddsData.odds?.draw,
+      awayOdds: oddsData.odds?.away,
+    } : null;
 
     return {
       fixtureId: fixture.id,
       score: `${homeGoals}-${awayGoals}`,
-      xG: { home: probs.hXG, away: probs.aXG },
+      xG: { home: probs.hXG || 1.2, away: probs.aXG || 1.0 },
       probabilities: {
         home: probs.home,
         draw: probs.draw,
         away: probs.away,
       },
       confidence,
+      oddsInfo,
       markets: [
-        { id: 'result',  label: 'Match Result',     options: [
+        { id: 'result', label: 'Match Result', options: [
           { value: `${homeName} Win`, prob: probs.home,  tier: probs.home >= 58 ? 'high' : 'med' },
-          { value: 'Draw',            prob: probs.draw,  tier: 'med' },
-          { value: `${awayName} Win`, prob: probs.away,  tier: probs.away >= 52 ? 'high' : 'med' },
+          { value: 'Draw',           prob: probs.draw,  tier: 'med' },
+          { value: `${awayName} Win`,prob: probs.away,  tier: probs.away >= 52 ? 'high' : 'med' },
         ]},
-        { id: 'goals',   label: 'Total Goals',      options: [
-          { value: 'Over 2.5',        prob: markets.over25,  tier: markets.over25 >= 62 ? 'high' : 'med' },
-          { value: 'Under 2.5',       prob: markets.under25, tier: markets.under25 >= 58 ? 'high' : 'med' },
-          { value: 'Over 1.5',        prob: markets.over15,  tier: 'med' },
+        { id: 'goals', label: 'Total Goals', options: [
+          { value: 'Over 2.5',  prob: markets.over25,  tier: markets.over25 >= 62 ? 'high' : 'med' },
+          { value: 'Under 2.5', prob: markets.under25, tier: markets.under25 >= 58 ? 'high' : 'med' },
+          { value: 'Over 1.5',  prob: markets.over15,  tier: 'med' },
         ]},
-        { id: 'btts',    label: 'Both Teams Score', options: [
-          { value: 'Yes (BTTS)',       prob: markets.btts,    tier: markets.btts >= 62 ? 'high' : 'med' },
-          { value: 'No',              prob: markets.nobtts,  tier: markets.nobtts >= 55 ? 'med' : 'low' },
+        { id: 'btts', label: 'Both Teams Score', options: [
+          { value: 'Yes (BTTS)', prob: markets.btts,   tier: markets.btts >= 62 ? 'high' : 'med' },
+          { value: 'No',         prob: markets.nobtts, tier: markets.nobtts >= 55 ? 'med' : 'low' },
         ]},
-        { id: 'dc',      label: 'Double Chance',    options: [
+        { id: 'dc', label: 'Double Chance', options: [
           { value: `${homeName} or Draw`, prob: markets.dcHome, tier: markets.dcHome >= 70 ? 'high' : 'med' },
           { value: `${awayName} or Draw`, prob: markets.dcAway, tier: markets.dcAway >= 65 ? 'high' : 'med' },
         ]},
@@ -279,5 +324,6 @@ function generatePrediction(fixture, homeFormData, awayFormData, h2hData) {
     throw err;
   }
 }
+
 
 module.exports = { generatePrediction };
