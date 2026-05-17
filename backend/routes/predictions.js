@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { generatePrediction } = require('../services/predictionEngine');
 const { getFixturesByDate, formatDate } = require('../services/footballApi');
+const { findOddsForFixture } = require('../services/oddsService');
 const NodeCache = require('node-cache');
 
 const predCache = new NodeCache({ stdTTL: 3600 });
@@ -17,40 +18,30 @@ router.post('/', async (req, res, next) => {
     const cached = predCache.get(cKey);
     if (cached) return res.json(cached);
 
+    // Find fixture
     const today = formatDate(new Date());
     const yesterday = formatDate(new Date(Date.now() - 86400000));
     const tomorrow = formatDate(new Date(Date.now() + 86400000));
-
     const [t, y, tm] = await Promise.all([
       getFixturesByDate(today),
       getFixturesByDate(yesterday),
       getFixturesByDate(tomorrow),
     ]);
-
-    const allFixtures = [...t, ...y, ...tm];
-    const fixture = allFixtures.find(f => f.id === fixtureId) || {
+    const fixture = [...t, ...y, ...tm].find(f => f.id === fixtureId) || {
       id: fixtureId,
       home: { name: 'Home', id: homeId },
       away: { name: 'Away', id: awayId },
       leagueName: 'Football',
     };
 
-    // Generate varied predictions based on team IDs so each match gets unique results
-    const seed = (homeId + awayId) % 100;
-    const homeForm = {
-      name: fixture.home.name,
-      form: seed > 50 ? ['W','W','D','W','L'] : ['L','W','D','L','W'],
-      avgScored: 1.0 + (seed % 20) / 20,
-      avgConceded: 0.8 + (seed % 15) / 20,
-    };
-    const awayForm = {
-      name: fixture.away.name,
-      form: seed > 60 ? ['W','D','W','L','W'] : ['D','L','W','W','D'],
-      avgScored: 0.9 + ((seed + 30) % 20) / 20,
-      avgConceded: 1.0 + ((seed + 10) % 15) / 20,
-    };
+    // Try to get real bookmaker odds
+    const oddsData = await findOddsForFixture(
+      fixture.home.name,
+      fixture.away.name
+    );
 
-    const prediction = generatePrediction(fixture, homeForm, awayForm, null);
+    // Generate prediction — use real odds if available
+    const prediction = generatePrediction(fixture, null, null, null, oddsData);
     predCache.set(cKey, prediction);
     res.json(prediction);
   } catch (err) {
@@ -77,21 +68,12 @@ router.get('/batch', async (req, res, next) => {
         continue;
       }
 
-      const seed = (fixture.home.id + fixture.away.id) % 100;
-      const homeForm = {
-        name: fixture.home.name,
-        form: seed > 50 ? ['W','W','D','W','L'] : ['L','W','D','L','W'],
-        avgScored: 1.0 + (seed % 20) / 20,
-        avgConceded: 0.8 + (seed % 15) / 20,
-      };
-      const awayForm = {
-        name: fixture.away.name,
-        form: seed > 60 ? ['W','D','W','L','W'] : ['D','L','W','W','D'],
-        avgScored: 0.9 + ((seed + 30) % 20) / 20,
-        avgConceded: 1.0 + ((seed + 10) % 15) / 20,
-      };
+      const oddsData = await findOddsForFixture(
+        fixture.home.name,
+        fixture.away.name
+      );
 
-      const prediction = generatePrediction(fixture, homeForm, awayForm, null);
+      const prediction = generatePrediction(fixture, null, null, null, oddsData);
       predCache.set(cKey, prediction);
       predictions[fixture.id] = prediction;
     }
