@@ -173,11 +173,8 @@ function processMatch(match) {
 }
 
 async function getFixturesByDateFromOdds(dateStr) {
-  const cKey = `odds:fixtures:${dateStr}`;
-  const cached = cache.get(cKey);
-  if (cached) return cached;
-
   const all = await getAllUpcomingMatches();
+
   const fixtures = all
     .map(m => processMatch(m))
     .filter(Boolean)
@@ -186,7 +183,6 @@ async function getFixturesByDateFromOdds(dateStr) {
       return fDate === dateStr;
     });
 
-  cache.set(cKey, fixtures, 600);
   logger.info(`Found ${fixtures.length} odds fixtures for ${dateStr}`);
   return fixtures;
 }
