@@ -6,90 +6,27 @@ const cache = new NodeCache({ stdTTL: 600 });
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
 const BASE = 'https://api.the-odds-api.com/v4';
 
-const SPORT_KEYS = [
-  'soccer_epl',
-  'soccer_spain_la_liga',
-  'soccer_uefa_champs_league',
-  'soccer_germany_bundesliga',
-  'soccer_italy_serie_a',
-  'soccer_france_ligue_one',
+const SPORTS = [
+  { key: 'soccer_epl',                name: 'Premier League',   flag: '🏴󠁧󠁢󠁥', leagueKey: 'pl' },
+  { key: 'soccer_spain_la_liga',      name: 'La Liga',          flag: '🇪🇸', leagueKey: 'll' },
+  { key: 'soccer_uefa_champs_league', name: 'Champions League', flag: '⭐', leagueKey: 'cl' },
+  { key: 'soccer_germany_bundesliga', name: 'Bundesliga',       flag: '🇩🇪', leagueKey: 'bl' },
+  { key: 'soccer_italy_serie_a',      name: 'Serie A',          flag: '🇮', leagueKey: 'sa' },
+  { key: 'soccer_france_ligue_one',   name: 'Ligue 1',          flag: '🇫🇷', leagueKey: 'l1' },
 ];
-
-const LEAGUE_META = {
-  soccer_epl:                  { key:'pl',  name:'Premier League',   flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  soccer_spain_la_liga:        { key:'ll',  name:'La Liga',          flag:'🇪🇸' },
-  soccer_uefa_champs_league:   { key:'cl',  name:'Champions League', flag:'⭐' },
-  soccer_germany_bundesliga:   { key:'bl',  name:'Bundesliga',       flag:'🇩🇪' },
-  soccer_italy_serie_a:        { key:'sa',  name:'Serie A',          flag:'🇮🇹' },
-  soccer_france_ligue_one:     { key:'l1',  name:'Ligue 1',          flag:'🇫🇷' },
-};
 
 function oddsToProb(decimal) {
   if (!decimal || decimal <= 1) return 0;
   return 1 / decimal;
 }
 
-function normalize(str) {
-  return str.toLowerCase()
-    .replace(/\bfc\b|\baf\b|\bcf\b|\bsc\b|\bac\b|\bus\b|\bcd\b|\brc\b|\bas\b|\bss\b|\bssc\b/gi, '')
-    .replace(/[^a-z0-9]/g, '')
-    .trim();
-}
+function processMatch(match, sport) {
+  const bm = match.bookmakers?.[0];
+  if (!bm) return null;
 
-async function fetchOddsForSport(sportKey) {
-  const cKey = `odds:${sportKey}`;
-  const cached = cache.get(cKey);
-  if (cached) return cached;
-
-  try {
-    const { data } = await axios.get(`${BASE}/sports/${sportKey}/odds`, {
-      params: {
-        apiKey: ODDS_API_KEY,
-        regions: 'eu',
-        markets: 'h2h,totals,btts',
-        oddsFormat: 'decimal',
-        dateFormat: 'iso',
-      },
-      timeout: 8000,
-    });
-    cache.set(cKey, data || []);
-    logger.info(`Fetched ${(data||[]).length} matches for ${sportKey}`);
-    return data || [];
-  } catch (err) {
-    logger.error(`Odds API failed for ${sportKey}:`, err.message);
-    return [];
-  }
-}
-
-async function getAllUpcomingMatches() {
-  const cKey = 'odds:all:matches';
-  const cached = cache.get(cKey);
-  if (cached) return cached;
-
-  const results = await Promise.allSettled(
-    SPORT_KEYS.map(key => fetchOddsForSport(key))
-  );
-
-  const all = [];
-  results.forEach((r, i) => {
-    if (r.status === 'fulfilled') {
-      const sportKey = SPORT_KEYS[i];
-      const meta = LEAGUE_META[sportKey] || {};
-      (r.value || []).forEach(match => {
-        all.push({ ...match, sportKey, leagueMeta: meta });
-      });
-    }
-  });
-
-  all.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time));
-  if (all.length > 0) cache.set(cKey, all, 600);
-  return all;
-}
-
-function processMatch(match) {
-  const h2h = match.bookmakers?.[0]?.markets?.find(m => m.key === 'h2h');
-  const totals = match.bookmakers?.[0]?.markets?.find(m => m.key === 'totals');
-  const bttsMarket = match.bookmakers?.[0]?.markets?.find(m => m.key === 'btts');
+  const h2h = bm.markets?.find(m => m.key === 'h2h');
+  const totals = bm.markets?.find(m => m.key === 'totals');
+  const bttsMarket = bm.markets?.find(m => m.key === 'btts');
 
   if (!h2h) return null;
 
@@ -99,115 +36,148 @@ function processMatch(match) {
 
   if (!homeOdds || !awayOdds || !drawOdds) return null;
 
-  // Remove bookmaker margin
-  const rawHome = oddsToProb(homeOdds);
-  const rawDraw = oddsToProb(drawOdds);
-  const rawAway = oddsToProb(awayOdds);
-  const total = rawHome + rawDraw + rawAway;
+  // Remove bookmaker margin (overround)
+  const rawH = oddsToProb(homeOdds);
+  const rawD = oddsToProb(drawOdds);
+  const rawA = oddsToProb(awayOdds);
+  const total = rawH + rawD + rawA;
 
-  const homeProb = Math.round((rawHome / total) * 100);
-  const drawProb = Math.round((rawDraw / total) * 100);
+  const homeProb = Math.round((rawH / total) * 100);
+  const drawProb = Math.round((rawD / total) * 100);
   const awayProb = 100 - homeProb - drawProb;
 
   // Over/Under 2.5
-  const over25 = totals?.outcomes?.find(o => o.name === 'Over' && parseFloat(o.point) === 2.5)?.price;
-  const under25 = totals?.outcomes?.find(o => o.name === 'Under' && parseFloat(o.point) === 2.5)?.price;
-  const over25Prob = over25 && under25
-    ? Math.round((oddsToProb(over25) / (oddsToProb(over25) + oddsToProb(under25))) * 100)
-    : null;
-
-  // Over 1.5
-  const over15 = totals?.outcomes?.find(o => o.name === 'Over' && parseFloat(o.point) === 1.5)?.price;
-  const over15Prob = over15 ? Math.min(92, Math.round(oddsToProb(over15) * 110)) : null;
+  const over25odds = totals?.outcomes?.find(
+    o => o.name === 'Over' && parseFloat(o.point) === 2.5
+  )?.price;
+  const under25odds = totals?.outcomes?.find(
+    o => o.name === 'Under' && parseFloat(o.point) === 2.5
+  )?.price;
+  let over25Prob = null;
+  if (over25odds && under25odds) {
+    const rO = oddsToProb(over25odds);
+    const rU = oddsToProb(under25odds);
+    over25Prob = Math.round((rO / (rO + rU)) * 100);
+  }
 
   // BTTS
   const bttsYesOdds = bttsMarket?.outcomes?.find(o => o.name === 'Yes')?.price;
   const bttsNoOdds = bttsMarket?.outcomes?.find(o => o.name === 'No')?.price;
-  const bttsYesProb = bttsYesOdds && bttsNoOdds
-    ? Math.round((oddsToProb(bttsYesOdds) / (oddsToProb(bttsYesOdds) + oddsToProb(bttsNoOdds))) * 100)
-    : null;
+  let bttsProb = null;
+  if (bttsYesOdds && bttsNoOdds) {
+    const rY = oddsToProb(bttsYesOdds);
+    const rN = oddsToProb(bttsNoOdds);
+    bttsProb = Math.round((rY / (rY + rN)) * 100);
+  }
 
-  // xG estimate from probabilities
-  const homeXG = homeProb >= 60 ? 1.8
-    : homeProb >= 50 ? 1.5
-    : homeProb >= 40 ? 1.2
-    : 0.9;
-  const awayXG = awayProb >= 55 ? 1.6
-    : awayProb >= 45 ? 1.3
-    : awayProb >= 35 ? 1.0
-    : 0.7;
+  // xG estimate from win probability
+  const homeXG = homeProb >= 65 ? 2.0
+    : homeProb >= 52 ? 1.6
+    : homeProb >= 42 ? 1.3
+    : homeProb >= 32 ? 1.0
+    : 0.8;
+  const awayXG = awayProb >= 60 ? 1.8
+    : awayProb >= 48 ? 1.4
+    : awayProb >= 38 ? 1.1
+    : awayProb >= 28 ? 0.8
+    : 0.6;
 
-  const meta = match.leagueMeta || {};
   const commenceTime = new Date(match.commence_time);
 
   return {
-    id: match.id, // Odds API string ID — used as primary ID now
-    leagueKey: meta.key || 'other',
-    leagueName: meta.name || match.sport_title || 'Football',
-    leagueFlag: meta.flag || '⚽',
+    id: match.id,
+    leagueKey: sport.leagueKey,
+    leagueName: sport.name,
+    leagueFlag: sport.flag,
     date: match.commence_time,
     time: commenceTime.toLocaleTimeString('en-GB', {
       hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
     }),
     status: 'NS',
     elapsed: null,
-    home: { id: match.home_team, name: match.home_team, logo: null },
-    away: { id: match.away_team, name: match.away_team, logo: null },
+    home: { id: match.id + '_h', name: match.home_team, logo: null },
+    away: { id: match.id + '_a', name: match.away_team, logo: null },
     goals: { home: null, away: null },
-    // Odds data attached
     oddsData: {
-      bookmaker: match.bookmakers?.[0]?.title || 'Bookmaker',
+      bookmaker: bm.title,
       odds: { home: homeOdds, draw: drawOdds, away: awayOdds },
       probabilities: { home: homeProb, draw: drawProb, away: awayProb },
       markets: {
         over25: over25Prob,
         under25: over25Prob ? 100 - over25Prob : null,
-        over15: over15Prob,
-        bttsYes: bttsYesProb,
-        bttsNo: bttsYesProb ? 100 - bttsYesProb : null,
+        over15: over25Prob ? Math.min(90, over25Prob + 18) : null,
+        bttsYes: bttsProb,
+        bttsNo: bttsProb ? 100 - bttsProb : null,
       },
       xG: { home: homeXG, away: awayXG },
     },
   };
 }
 
-async function getFixturesByDateFromOdds(dateStr) {
-  const all = await getAllUpcomingMatches();
+async function fetchSportOdds(sport, dateStr) {
+  const cKey = `odds:${sport.key}:${dateStr}`;
+  const cached = cache.get(cKey);
+  if (cached) return cached;
 
-  const fixtures = all
-    .map(m => processMatch(m))
-    .filter(Boolean)
-    .filter(f => {
-      const fDate = new Date(f.date).toISOString().split('T')[0];
-      return fDate === dateStr;
+  // Build date range for the day
+  const from = `${dateStr}T00:00:00Z`;
+  const to   = `${dateStr}T23:59:59Z`;
+
+  try {
+    const { data } = await axios.get(`${BASE}/sports/${sport.key}/odds`, {
+      params: {
+        apiKey: ODDS_API_KEY,
+        regions: 'eu',
+        markets: 'h2h,totals,btts',
+        oddsFormat: 'decimal',
+        dateFormat: 'iso',
+        commenceTimeFrom: from,
+        commenceTimeTo: to,
+      },
+      timeout: 10000,
     });
 
-  logger.info(`Found ${fixtures.length} odds fixtures for ${dateStr}`);
+    const fixtures = (data || [])
+      .map(m => processMatch(m, sport))
+      .filter(Boolean);
+
+    logger.info(`${sport.name}: ${fixtures.length} fixtures for ${dateStr}`);
+    if (fixtures.length > 0) cache.set(cKey, fixtures, 600);
+    return fixtures;
+  } catch (err) {
+    logger.error(`Odds API failed for ${sport.key}:`, err.response?.data || err.message);
+    return [];
+  }
+}
+
+async function getFixturesByDateFromOdds(dateStr) {
+  const results = await Promise.allSettled(
+    SPORTS.map(sport => fetchSportOdds(sport, dateStr))
+  );
+
+  const fixtures = results
+    .filter(r => r.status === 'fulfilled')
+    .flatMap(r => r.value)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  logger.info(`Total fixtures for ${dateStr}: ${fixtures.length}`);
   return fixtures;
 }
 
 async function findOddsForFixture(homeName, awayName) {
-  const all = await getAllUpcomingMatches();
-  const homeNorm = normalize(homeName);
-  const awayNorm = normalize(awayName);
+  const today = new Date().toISOString().split('T')[0];
+  const fixtures = await getFixturesByDateFromOdds(today);
 
-  const match = all.find(m => {
-    const mHome = normalize(m.home_team);
-    const mAway = normalize(m.away_team);
-    return (
-      (mHome.includes(homeNorm) || homeNorm.includes(mHome)) &&
-      (mAway.includes(awayNorm) || awayNorm.includes(mAway))
-    );
-  });
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const hN = norm(homeName);
+  const aN = norm(awayName);
 
-  if (!match) return null;
-  const processed = processMatch(match);
-  return processed?.oddsData || null;
+  const match = fixtures.find(f =>
+    (norm(f.home.name).includes(hN) || hN.includes(norm(f.home.name))) &&
+    (norm(f.away.name).includes(aN) || aN.includes(norm(f.away.name)))
+  );
+
+  return match?.oddsData || null;
 }
 
-module.exports = {
-  getFixturesByDateFromOdds,
-  findOddsForFixture,
-  getAllUpcomingMatches,
-  oddsToProb,
-};
+module.exports = { getFixturesByDateFromOdds, findOddsForFixture };
