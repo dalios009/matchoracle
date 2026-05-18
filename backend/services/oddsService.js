@@ -142,7 +142,7 @@ function processMatch(match) {
   const commenceTime = new Date(match.commence_time);
 
   return {
-    id: match.id,
+    id: match.id, // Odds API string ID — used as primary ID now
     leagueKey: meta.key || 'other',
     leagueName: meta.name || match.sport_title || 'Football',
     leagueFlag: meta.flag || '⚽',
