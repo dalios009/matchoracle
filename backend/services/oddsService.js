@@ -81,9 +81,8 @@ async function getAllUpcomingMatches() {
     }
   });
 
-  // Sort by time
   all.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time));
-  cache.set(cKey, all, 600);
+  if (all.length > 0) cache.set(cKey, all, 600);
   return all;
 }
 
