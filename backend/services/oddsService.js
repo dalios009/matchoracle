@@ -115,35 +115,46 @@ function processMatch(match, sport) {
 }
 
 async function fetchSportOdds(sport, dateStr) {
-  const cKey = `odds:${sport.key}:${dateStr}`;
+  const cKey = `odds:${sport.key}`;
   const cached = cache.get(cKey);
-  if (cached) return cached;
+  
+  let data = cached;
+  
+  if (!data) {
+    try {
+      const response = await axios.get(`${BASE}/sports/${sport.key}/odds`, {
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: 'eu',
+          markets: 'h2h',
+          oddsFormat: 'decimal',
+          dateFormat: 'iso',
+        },
+        timeout: 10000,
+      });
+      data = response.data || [];
+      if (data.length > 0) cache.set(cKey, data, 600);
+      logger.info(`${sport.name}: fetched ${data.length} raw matches`);
+    } catch (err) {
+      const errMsg = err.response?.data 
+        ? JSON.stringify(err.response.data) 
+        : err.message;
+      logger.error(`Odds API failed for ${sport.key}: ${errMsg}`);
+      return [];
+    }
+  }
 
-  // Build date range for the day
-  const from = `${dateStr}T00:00:00Z`;
-  const to   = `${dateStr}T23:59:59Z`;
+  // Filter by date
+  const fixtures = data
+    .filter(m => {
+      const mDate = new Date(m.commence_time).toISOString().split('T')[0];
+      return mDate === dateStr;
+    })
+    .map(m => processMatch(m, sport))
+    .filter(Boolean);
 
-  try {
-    const { data } = await axios.get(`${BASE}/sports/${sport.key}/odds`, {
-      params: {
-        apiKey: ODDS_API_KEY,
-        regions: 'eu',
-        markets: 'h2h,totals,btts',
-        oddsFormat: 'decimal',
-        dateFormat: 'iso',
-        commenceTimeFrom: from,
-        commenceTimeTo: to,
-      },
-      timeout: 10000,
-    });
-
-    const fixtures = (data || [])
-      .map(m => processMatch(m, sport))
-      .filter(Boolean);
-
-    logger.info(`${sport.name}: ${fixtures.length} fixtures for ${dateStr}`);
-    if (fixtures.length > 0) cache.set(cKey, fixtures, 600);
-    return fixtures;
+  return fixtures;
+}
   } catch (err) {
     logger.error(`Odds API failed for ${sport.key}:`, err.response?.data || err.message);
     return [];
