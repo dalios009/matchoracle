@@ -27,8 +27,11 @@ app.use(cors({
 app.use(express.json({ limit: '10kb' }));
 
 const globalLimiter = rateLimit({
-  windowMs: 60000, max: 60,
-  standardHeaders: true, legacyHeaders: false,
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60_000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: 'Too many requests.' },
 });
 app.use('/api/', globalLimiter);
