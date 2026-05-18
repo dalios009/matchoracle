@@ -649,8 +649,8 @@ async function fetchPrediction(fixture) {
     method: 'POST',
     body: JSON.stringify({
       fixtureId: fixture.id,
-      homeId: fixture.home.id,
-      awayId: fixture.away.id,
+      homeId: fixture.home.id || fixture.home.name,
+      awayId: fixture.away.id || fixture.away.name,
     }),
   });
 }
