@@ -2,23 +2,26 @@ const express = require('express');
 const router = express.Router();
 const { generatePrediction } = require('../services/predictionEngine');
 const { getFixturesByDateFromOdds } = require('../services/oddsService');
-const { formatDate } = require('../services/footballApi');
 const NodeCache = require('node-cache');
 
 const predCache = new NodeCache({ stdTTL: 3600 });
 
+function formatDate(date) {
+  return new Date(date).toISOString().split('T')[0];
+}
+
 router.post('/', async (req, res, next) => {
   try {
     const { fixtureId, homeId, awayId } = req.body;
-    if (!fixtureId || !homeId || !awayId) {
-      return res.status(400).json({ error: 'fixtureId, homeId, and awayId are required.' });
+    if (!fixtureId) {
+      return res.status(400).json({ error: 'fixtureId is required.' });
     }
 
     const cKey = `pred:${fixtureId}`;
     const cached = predCache.get(cKey);
     if (cached) return res.json(cached);
 
-    // Find fixture with odds data already attached
+    // Search today + tomorrow + yesterday
     const today = formatDate(new Date());
     const tomorrow = formatDate(new Date(Date.now() + 86400000));
     const yesterday = formatDate(new Date(Date.now() - 86400000));
@@ -32,17 +35,12 @@ router.post('/', async (req, res, next) => {
     const allFixtures = [...t, ...tm, ...y];
     const fixture = allFixtures.find(f => String(f.id) === String(fixtureId));
 
-    // Use odds data already in the fixture
-    const oddsData = fixture?.oddsData || null;
+    if (!fixture) {
+      return res.status(404).json({ error: 'Fixture not found in odds data.' });
+    }
 
-    const fixtureObj = fixture || {
-      id: fixtureId,
-      home: { id: homeId, name: String(homeId) },
-      away: { id: awayId, name: String(awayId) },
-      leagueName: 'Football',
-    };
-
-    const prediction = generatePrediction(fixtureObj, null, null, null, oddsData);
+    // Odds data is already attached to the fixture
+    const prediction = generatePrediction(fixture, null, null, null, fixture.oddsData);
     predCache.set(cKey, prediction);
     res.json(prediction);
   } catch (err) {
