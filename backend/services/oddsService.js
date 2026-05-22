@@ -250,8 +250,8 @@ function buildPrediction(game, sport) {
     date: game.commence_time,
     time: new Date(game.commence_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'UTC'}),
     status: 'NS', elapsed: null,
-    home: { id: game.id+'_h', name: home, logo: null },
-    away: { id: game.id+'_a', name: away, logo: null },
+    home: { id: game.id+'_h', name: home, logo: getLogo(home) },
+    away: { id: game.id+'_a', name: away, logo: getLogo(away) },
     goals: { home: null, away: null },
     oddsData: {
       bookmaker: bms[0] ? bms[0].title : 'Bookmaker',
