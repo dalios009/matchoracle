@@ -15,6 +15,7 @@ const SPORTS = [
   { key: 'soccer_france_ligue_one',   name: 'Ligue 1',          flag: '🇫🇷', lk: 'l1' },
   { key: 'soccer_efl_champ',         name: 'Championship',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', lk: 'ch' },
   { key: 'soccer_usa_mls',           name: 'MLS',              flag: '🇺🇸', lk: 'mls' },
+  { key: 'soccer_fifa_world_cup', name: 'FIFA World Cup 2026', flag: '🌍', lk: 'wc' },
 ];
 const LOGOS = {
   'Arsenal':'https://media.api-sports.io/football/teams/42.png',
