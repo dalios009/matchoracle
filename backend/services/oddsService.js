@@ -42,30 +42,56 @@ function scoreMatrix(hxg, axg, mx) {
   return m;
 }
 
+// ── SHARP BOOKMAKER WEIGHTING ───────────────────────────────────
+// Pinnacle and Betfair Exchange are widely regarded as the most efficient
+// (lowest-margin, sharpest-priced) books in the industry — professional
+// bettors treat their lines as the closest thing to "true" probability.
+// Weighting them higher in the consensus tightens our baseline before
+// any other modelling is applied.
+var SHARP_BOOKS = {
+  pinnacle: 3,
+  betfair_ex_eu: 3,
+  betfair: 3,
+  matchbook: 2,
+  betfair_ex_au: 3,
+};
+function sharpWeight(bookmakerKey) {
+  return SHARP_BOOKS[(bookmakerKey || '').toLowerCase()] || 1;
+}
+
 // ── MULTI-BOOKMAKER CONSENSUS (replaces single-bookmaker reads) ─
-// Instead of reading bookmakers[0] only, average across ALL bookmakers.
-// This is the core "ML-style" improvement: ensemble of N market estimators
-// reduces variance vs trusting one bookmaker's price.
+// Ensemble of N market estimators reduces variance vs trusting one book.
+// Outliers are trimmed first (removes stale/erroneous lines), then the
+// remaining quotes are weighted toward sharp books for the final mean.
 function consensusOdds(bookmakers, outcomeNameFn, market) {
   market = market || 'h2h';
-  var prices = [];
+  var entries = [];
   (bookmakers || []).forEach(function (bm) {
+    var w = sharpWeight(bm.key);
     (bm.markets || []).forEach(function (mkt) {
       if (mkt.key !== market) return;
       (mkt.outcomes || []).forEach(function (oc) {
-        if (outcomeNameFn(oc)) prices.push(oc.price);
+        if (outcomeNameFn(oc)) entries.push({ price: oc.price, weight: w });
       });
     });
   });
-  if (!prices.length) return null;
-  // Trim outliers (remove min and max if we have 5+ quotes) — robust mean
-  if (prices.length >= 5) {
-    prices.sort(function (a, b) { return a - b; });
-    prices = prices.slice(1, -1);
+  if (!entries.length) return null;
+
+  // Trim outliers on raw price (remove min and max if we have 5+ quotes)
+  if (entries.length >= 5) {
+    entries.sort(function (a, b) { return a.price - b.price; });
+    entries = entries.slice(1, -1);
   }
-  var mean = prices.reduce(function (a, b) { return a + b; }, 0) / prices.length;
-  var variance = prices.reduce(function (s, p) { return s + Math.pow(p - mean, 2); }, 0) / prices.length;
-  return { mean: mean, stdDev: Math.sqrt(variance), n: prices.length };
+
+  var weightedSum = 0, totalWeight = 0;
+  entries.forEach(function (e) { weightedSum += e.price * e.weight; totalWeight += e.weight; });
+  var mean = weightedSum / totalWeight;
+
+  // stdDev computed on raw prices — used for the agreement score, unaffected by weighting
+  var rawMean = entries.reduce(function (s, e) { return s + e.price; }, 0) / entries.length;
+  var variance = entries.reduce(function (s, e) { return s + Math.pow(e.price - rawMean, 2); }, 0) / entries.length;
+
+  return { mean: mean, stdDev: Math.sqrt(variance), n: entries.length };
 }
 
 function consensusTotalsLine(bookmakers, point) {
@@ -84,7 +110,11 @@ function consensusTotalsLine(bookmakers, point) {
   var avgO = prices.over.reduce(function (a, b) { return a + b; }, 0) / prices.over.length;
   var avgU = prices.under.reduce(function (a, b) { return a + b; }, 0) / prices.under.length;
   var rO = prob(avgO), rU = prob(avgU);
-  return Math.round((rO / (rO + rU)) * 100);
+  return {
+    overProb: Math.round((rO / (rO + rU)) * 100),
+    overOdds: parseFloat(avgO.toFixed(2)),
+    underOdds: parseFloat(avgU.toFixed(2)),
+  };
 }
 
 function consensusBtts(bookmakers) {
@@ -102,8 +132,13 @@ function consensusBtts(bookmakers) {
   var avgY = yes.reduce(function (a, b) { return a + b; }, 0) / yes.length;
   var avgN = no.reduce(function (a, b) { return a + b; }, 0) / no.length;
   var rY = prob(avgY), rN = prob(avgN);
-  return Math.round((rY / (rY + rN)) * 100);
+  return {
+    yesProb: Math.round((rY / (rY + rN)) * 100),
+    yesOdds: parseFloat(avgY.toFixed(2)),
+    noOdds: parseFloat(avgN.toFixed(2)),
+  };
 }
+
 
 // xG estimate from totals market, with odds-based fallback
 function estimateTotalXG(bookmakers) {
@@ -206,8 +241,9 @@ function buildPrediction(match, sport) {
     if (parseInt(parts[0]) > 0 && parseInt(parts[1]) > 0) matBtts += e[1];
   });
   var bttsVal = bttsConsensus !== null
-    ? 0.5 * (bttsConsensus / 100) + 0.5 * matBtts
+    ? 0.5 * (bttsConsensus.yesProb / 100) + 0.5 * matBtts
     : matBtts;
+  var bttsRealOdds = bttsConsensus !== null ? bttsConsensus.yesOdds : null;
 
   // Step 8: Over/Under — consensus market (multiple lines) + Poisson cross-check
   var over25Consensus = consensusTotalsLine(bms, 2.5);
@@ -217,8 +253,9 @@ function buildPrediction(match, sport) {
     if (parseInt(parts[0]) + parseInt(parts[1]) > 2) matOver25 += e[1];
   });
   var over25 = over25Consensus !== null
-    ? 0.5 * (over25Consensus / 100) + 0.5 * matOver25
+    ? 0.5 * (over25Consensus.overProb / 100) + 0.5 * matOver25
     : matOver25;
+  var over25RealOdds = over25Consensus !== null ? over25Consensus.overOdds : null;
 
   var over15Consensus = consensusTotalsLine(bms, 1.5);
   var matOver15 = 0;
@@ -227,7 +264,7 @@ function buildPrediction(match, sport) {
     if (parseInt(parts[0]) + parseInt(parts[1]) > 1) matOver15 += e[1];
   });
   var over15 = over15Consensus !== null
-    ? 0.5 * (over15Consensus / 100) + 0.5 * matOver15
+    ? 0.5 * (over15Consensus.overProb / 100) + 0.5 * matOver15
     : matOver15;
 
   var over35Mat = 0;
@@ -271,8 +308,18 @@ function buildPrediction(match, sport) {
   var sampleBonus = Math.min(8, numBooks * 0.8);
   var conf = Math.min(96, Math.max(32, sharpness + agreementBonus + sampleBonus));
 
-  // Step 13: value bets — EV using the BLENDED probability vs raw market odds
-  // (this is the genuine "edge" signal: where our ensemble disagrees with the market)
+  // Step 13: value bets — EV using the BLENDED probability vs REAL market odds
+  // (the genuine "edge" signal: where our ensemble disagrees with the market)
+  //
+  // Sanity check: reject if our model's probability is more than 1.6x the
+  // market-implied probability. A gap that large from a consensus-odds-only
+  // model is almost always model noise, not real insight — most often on
+  // long-shot prices where small probability errors produce inflated EV%.
+  function passesSanityCheck(modelP, odds) {
+    var implied = 1 / odds;
+    return (modelP / implied) <= 1.6;
+  }
+
   var valueBets = [];
   [
     { label: home + ' Win', p: bH, odds: hOdds },
@@ -280,27 +327,46 @@ function buildPrediction(match, sport) {
     { label: away + ' Win', p: bA, odds: aOdds },
   ].forEach(function (v) {
     var ev = v.p * v.odds - 1;
-    if (ev > 0.06 && v.p > 0.22) {
+    if (ev > 0.06 && v.p > 0.22 && conf >= 55 && v.odds <= 4.5 && passesSanityCheck(v.p, v.odds)) {
       valueBets.push({ label: v.label, odds: v.odds, ev: ev, prob: v.p });
     }
   });
-  // BTTS / Over-Under value checks (if a meaningful gap exists vs naive 50/50 assumption)
-  if (bttsVal >= 0.62) valueBets.push({ label: 'BTTS Yes', odds: parseFloat((1 / bttsVal).toFixed(2)), ev: bttsVal - 0.5, prob: bttsVal });
-  if (over25 >= 0.62) valueBets.push({ label: 'Over 2.5 Goals', odds: parseFloat((1 / over25).toFixed(2)), ev: over25 - 0.5, prob: over25 });
+
+  // BTTS / Over 2.5 value checks — now uses REAL consensus odds, real EV formula
+  if (bttsRealOdds && conf >= 55) {
+    var bttsEV = bttsVal * bttsRealOdds - 1;
+    if (bttsEV > 0.06 && bttsVal > 0.22 && passesSanityCheck(bttsVal, bttsRealOdds)) {
+      valueBets.push({ label: 'BTTS Yes', odds: bttsRealOdds, ev: bttsEV, prob: bttsVal });
+    }
+  }
+  if (over25RealOdds && conf >= 55) {
+    var over25EV = over25 * over25RealOdds - 1;
+    if (over25EV > 0.06 && over25 > 0.22 && passesSanityCheck(over25, over25RealOdds)) {
+      valueBets.push({ label: 'Over 2.5 Goals', odds: over25RealOdds, ev: over25EV, prob: over25 });
+    }
+  }
   valueBets.sort(function (a, b) { return b.ev - a.ev; });
 
+
   // Step 14: best bets for UI — sorted, deduped, capped at 6
+  var matchResultPick = bH >= bA && bH >= bD ? home + ' Win' : bA > bH && bA >= bD ? away + ' Win' : 'Draw';
+  var matchResultOdds = bH >= bA && bH >= bD ? hOdds : bA > bH && bA >= bD ? aOdds : dOdds;
+
   var bestBets = [
-    { market: 'Match Result', value: bH >= bA && bH >= bD ? home + ' Win' : bA > bH && bA >= bD ? away + ' Win' : 'Draw',
-      prob: Math.round(Math.max(bH, bD, bA) * 100), tier: conf >= 65 ? 'high' : 'med' },
-    { market: 'Both Teams Score', value: 'Yes (BTTS)', prob: Math.round(bttsVal * 100), tier: bttsVal >= 0.6 ? 'high' : 'med' },
-    { market: 'Total Goals', value: 'Over 2.5', prob: Math.round(over25 * 100), tier: over25 >= 0.6 ? 'high' : 'med' },
-    { market: 'Total Goals', value: 'Over 1.5', prob: Math.round(over15 * 100), tier: over15 >= 0.75 ? 'high' : 'med' },
+    { market: 'Match Result', value: matchResultPick,
+      prob: Math.round(Math.max(bH, bD, bA) * 100), tier: conf >= 65 ? 'high' : 'med',
+      odds: parseFloat(matchResultOdds.toFixed(2)) },
+    { market: 'Both Teams Score', value: 'Yes (BTTS)', prob: Math.round(bttsVal * 100), tier: bttsVal >= 0.6 ? 'high' : 'med',
+      odds: bttsRealOdds },
+    { market: 'Total Goals', value: 'Over 2.5', prob: Math.round(over25 * 100), tier: over25 >= 0.6 ? 'high' : 'med',
+      odds: over25RealOdds },
+    { market: 'Total Goals', value: 'Over 1.5', prob: Math.round(over15 * 100), tier: over15 >= 0.75 ? 'high' : 'med',
+      odds: null }, // no consensus odds fetched for this line yet — outcome-only, not settleable for $ profit
     { market: 'Double Chance', value: bH >= bA ? home + ' or Draw' : away + ' or Draw',
-      prob: Math.round((bH >= bA ? bH + bD : bA + bD) * 100), tier: 'med' },
-    { market: 'Asian Handicap', value: home + ' -0.5', prob: Math.round(ahMinus05 * 100), tier: ahMinus05 >= 0.55 ? 'med' : 'low' },
-    { market: 'Clean Sheet', value: home + ' CS', prob: Math.round(homeCleanSheet * 100), tier: homeCleanSheet >= 0.4 ? 'med' : 'low' },
-    { market: 'Clean Sheet', value: away + ' CS', prob: Math.round(awayCleanSheet * 100), tier: awayCleanSheet >= 0.35 ? 'med' : 'low' },
+      prob: Math.round((bH >= bA ? bH + bD : bA + bD) * 100), tier: 'med', odds: null },
+    { market: 'Asian Handicap', value: home + ' -0.5', prob: Math.round(ahMinus05 * 100), tier: ahMinus05 >= 0.55 ? 'med' : 'low', odds: null },
+    { market: 'Clean Sheet', value: home + ' CS', prob: Math.round(homeCleanSheet * 100), tier: homeCleanSheet >= 0.4 ? 'med' : 'low', odds: null },
+    { market: 'Clean Sheet', value: away + ' CS', prob: Math.round(awayCleanSheet * 100), tier: awayCleanSheet >= 0.35 ? 'med' : 'low', odds: null },
   ].filter(function (b) { return b.prob >= 42; })
    .sort(function (a, b) { return b.prob - a.prob; })
    .slice(0, 6);
@@ -319,8 +385,10 @@ function buildPrediction(match, sport) {
     away: { id: match.id + '_a', name: away, logo: null },
     goals: { home: null, away: null },
     oddsData: {
-      bookmaker: bms.length + ' bookmakers (consensus)',
+      bookmaker: bms.length + ' bookmakers (sharp-weighted consensus)',
       odds: { home: hOdds, draw: dOdds, away: aOdds },
+      bttsOdds: bttsRealOdds,
+      over25Odds: over25RealOdds,
       probabilities: { home: Math.round(bH * 100), draw: Math.round(bD * 100), away: Math.round(bA * 100) },
       score: topScore[0] + '-' + topScore[1],
       xG: { home: hxg, away: axg },
@@ -348,6 +416,12 @@ function buildPrediction(match, sport) {
         var p = e[0].split('-');
         return { score: p[0] + '-' + p[1], prob: Math.round(e[1] * 1000) / 10 };
       }),
+      // Flag-time odds snapshot — used for closing-line value (CLV) tracking.
+      // The bot stores this when a value bet is first surfaced, then compares
+      // against odds closer to kickoff to see if the market moved with or
+      // against the pick (see verify_predictions / CLV job in the Python bot).
+      flagTimeOdds: { home: hOdds, draw: dOdds, away: aOdds, btts: bttsRealOdds, over25: over25RealOdds },
+      flaggedAt: new Date().toISOString(),
     },
   };
 }
