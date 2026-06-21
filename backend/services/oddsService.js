@@ -202,12 +202,26 @@ function buildPrediction(match, sport) {
   var numBooks = Math.min(hCons.n, dCons.n, aCons.n);
 
   // Step 4: expected goals
+  // Mismatch-aware total line: lopsided matches (e.g. heavy favourite vs weak
+  // underdog) tend to run HIGHER combined goals on average — the favourite
+  // often scores freely — not lower as a naive "low odds = tight game" guess
+  // would suggest. We measure mismatch via the log-ratio of the two outright
+  // odds and scale the total line up accordingly.
   var totalLine = estimateTotalXG(bms);
   if (totalLine === null) {
-    var minOdds = Math.min(hOdds, aOdds);
-    totalLine = Math.min(3.6, Math.max(1.8, 1.5 + minOdds * 0.32));
+    var minO = Math.min(hOdds, aOdds);
+    var maxO = Math.max(hOdds, aOdds);
+    var mismatch = Math.min(1, Math.log(maxO / minO) / Math.log(15));
+    totalLine = 2.3 + mismatch * 1.0;
   }
-  var homeShare = 0.40 + (pH / (pH + pA + 0.01)) * 0.30;
+  // Home/away goal split now scales directly and more aggressively with the
+  // probability gap (bH - bA), reaching up to 85/15 for one-sided mismatches
+  // instead of being capped near 70/30 — this is what actually lets the
+  // Poisson matrix produce 2-0/3-0/3-1 as the most likely score for clear
+  // favourites, instead of clustering everything around 1-0/1-1.
+  var probGap = pH - pA;
+  var homeShare = 0.5 + probGap * 0.6;
+  homeShare = Math.min(0.85, Math.max(0.15, homeShare));
   var hxg = parseFloat((totalLine * homeShare).toFixed(2));
   var axg = parseFloat((totalLine * (1 - homeShare)).toFixed(2));
 
