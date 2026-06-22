@@ -6,6 +6,7 @@ const axios = require('axios');
 const NodeCache = require('node-cache');
 const logger = require('../utils/logger');
 const { getTeamRating, getLeagueBaseline } = require('./teamRatings');
+const { getAllLiveRatings } = require('./historicalData');
 
 const cache = new NodeCache({ stdTTL: 600 });
 const KEY = process.env.ODDS_API_KEY;
@@ -175,7 +176,7 @@ function calibrate(p) {
 }
 
 // ── MAIN PREDICTION BUILDER ────────────────────────────────────
-function buildPrediction(match, sport) {
+function buildPrediction(match, sport, liveRatings) {
   var bms = match.bookmakers || [];
   if (!bms.length) return null;
 
@@ -205,9 +206,13 @@ function buildPrediction(match, sport) {
   var numBooks = Math.min(hCons.n, dCons.n, aCons.n);
 
   // Step 4: expected goals — blend Dixon-Coles team model with market totals line
+  // Team ratings now prefer REAL computed ratings from actual recent results
+  // (historicalData.js) when available; falls back to the static hand-typed
+  // dictionary (teamRatings.js) for teams with too little recent data —
+  // new promotions, minor World Cup nations, etc.
   var leagueBase = getLeagueBaseline(sport.key);
-  var homeRating = getTeamRating(home);
-  var awayRating = getTeamRating(away);
+  var homeRating = (liveRatings && liveRatings[home]) || getTeamRating(home);
+  var awayRating = (liveRatings && liveRatings[away]) || getTeamRating(away);
   var hxgTeamModel = leagueBase.home * homeRating.atk * awayRating.def;
   var axgTeamModel = leagueBase.away * awayRating.atk * homeRating.def;
 
@@ -517,6 +522,16 @@ async function fetchSport(sport) {
 }
 
 async function getFixturesByDateFromOdds(dateStr) {
+  // Fetch live-computed team ratings once (internally cached 12h) and reuse
+  // across every fixture in this batch — this is what makes ratings reflect
+  // real recent results instead of the static hand-typed defaults.
+  var liveRatings = {};
+  try {
+    liveRatings = await getAllLiveRatings();
+  } catch (e) {
+    logger.error('getAllLiveRatings failed, using static ratings only: ' + e.message);
+  }
+
   var results = await Promise.allSettled(SPORTS.map(function (s) { return fetchSport(s); }));
   var out = [];
   results.forEach(function (r, i) {
@@ -524,7 +539,7 @@ async function getFixturesByDateFromOdds(dateStr) {
     (r.value || []).forEach(function (game) {
       var d = new Date(game.commence_time).toISOString().split('T')[0];
       if (d !== dateStr) return;
-      var f = buildPrediction(game, SPORTS[i]);
+      var f = buildPrediction(game, SPORTS[i], liveRatings);
       if (f) out.push(f);
     });
   });
