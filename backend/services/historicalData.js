@@ -85,6 +85,36 @@ async function fetchFinishedMatches(competitionCode) {
 }
 
 /**
+ * Collect team crest (club logo) and national flag URLs seen in a batch of
+ * matches. football-data.org v4 includes these directly on each match's
+ * homeTeam/awayTeam objects (`crest`) and on `area.flag` for the team's
+ * country — no extra API calls needed, we already have this data from the
+ * same matches we use for ratings.
+ * Returns { [teamName]: { crest, flag } }
+ */
+function collectCrestsFromMatches(matches) {
+  const crests = {};
+  matches.forEach(function (m) {
+    [m.homeTeam, m.awayTeam].forEach(function (team) {
+      if (!team || !team.name) return;
+      if (!crests[team.name] && (team.crest || team.flag)) {
+        crests[team.name] = { crest: team.crest || null, flag: team.flag || null };
+      }
+    });
+    // National-team matches (World Cup) carry the country flag on `m.area`
+    // rather than on the team object itself in some responses.
+    if (m.area && m.area.flag) {
+      [m.homeTeam, m.awayTeam].forEach(function (team) {
+        if (team && team.name && !crests[team.name]) {
+          crests[team.name] = { crest: null, flag: m.area.flag };
+        }
+      });
+    }
+  });
+  return crests;
+}
+
+/**
  * Build per-team rating maps for one competition from its real recent results.
  * Returns { [teamName]: { atk, def, gamesUsed } }
  */
@@ -148,15 +178,48 @@ async function getAllLiveRatings() {
   );
 
   let merged = {};
+  let crests = {};
   results.forEach(function (r) {
     if (r.status !== 'fulfilled') return;
     const ratings = computeRatingsFromMatches(r.value);
     merged = Object.assign(merged, ratings);
+    crests = Object.assign({}, collectCrestsFromMatches(r.value), crests); // first-seen wins, club crest preferred
   });
 
   logger.info('Live ratings computed for ' + Object.keys(merged).length + ' teams from real results');
+  logger.info('Crests/flags collected for ' + Object.keys(crests).length + ' teams');
   cache.set(ck, merged, 43200);
+  cache.set('fd:allCrests', crests, 43200);
   return merged;
+}
+
+/**
+ * Get crest/flag URLs for every team seen in recent matches across all
+ * mapped competitions. Returns { [teamName]: { crest, flag } }.
+ * Must be called after (or alongside) getAllLiveRatings, since it shares
+ * the same underlying fetch — calling this first will trigger the fetch.
+ */
+async function getAllCrests() {
+  const ck = 'fd:allCrests';
+  const c = cache.get(ck);
+  if (c !== undefined) return c;
+  await getAllLiveRatings(); // populates the crests cache as a side effect
+  return cache.get(ck) || {};
+}
+
+/**
+ * Look up one team's crest/flag, with fuzzy name matching since odds-feed
+ * team names don't always match football-data.org's naming exactly
+ * (e.g. "Man City" vs "Manchester City FC").
+ */
+async function getTeamCrest(teamName) {
+  const all = await getAllCrests();
+  if (all[teamName]) return all[teamName];
+  const nl = teamName.toLowerCase();
+  const fuzzyKey = Object.keys(all).find(function (k) {
+    return k.toLowerCase().includes(nl) || nl.includes(k.toLowerCase());
+  });
+  return fuzzyKey ? all[fuzzyKey] : null;
 }
 
 /**
@@ -185,5 +248,7 @@ module.exports = {
   getAllLiveRatings,
   getLiveTeamRating,
   computeRatingsFromMatches,
+  getAllCrests,
+  getTeamCrest,
   COMPETITION_MAP,
 };
