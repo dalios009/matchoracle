@@ -324,6 +324,15 @@ def predict_game(game, sport_key="default"):
     # but the old 8%+prob>25% combo was so strict it almost never fired).
     # Also now checks BTTS and Over 2.5, not just match result, since the
     # model already computes probabilities for those markets anyway.
+    #
+    # Sanity check: reject if the model's probability is more than 1.5x the
+    # market-implied probability. At long odds (6.0, 7.0, 8.0+), even a small
+    # absolute error in our probability estimate (e.g. 15% vs a "true" 10%)
+    # produces a huge inflated EV% — that's model noise, not a real edge.
+    def passes_sanity(model_p, odds):
+        implied = 1 / odds
+        return (model_p / implied) <= 1.5
+
     value_bets = []
     for label, p_val, odds_val in [
         ("Home Win", bh, h_odds),
@@ -331,7 +340,7 @@ def predict_game(game, sport_key="default"):
         ("Away Win", ba, a_odds)
     ]:
         ev = p_val * odds_val - 1
-        if ev > 0.04 and p_val > 0.15:
+        if ev > 0.04 and p_val > 0.15 and odds_val <= 5.0 and passes_sanity(p_val, odds_val):
             value_bets.append({
                 "label": label, "odds": odds_val,
                 "ev": ev, "prob": p_val
@@ -341,7 +350,7 @@ def predict_game(game, sport_key="default"):
     if btts_mkt:
         btts_odds = 1 / btts_mkt
         ev_btts = btts * btts_odds - 1
-        if ev_btts > 0.04 and btts > 0.15:
+        if ev_btts > 0.04 and btts > 0.15 and btts_odds <= 5.0 and passes_sanity(btts, btts_odds):
             value_bets.append({
                 "label": "BTTS Yes", "odds": round(btts_odds, 2),
                 "ev": ev_btts, "prob": btts
@@ -358,7 +367,7 @@ def predict_game(game, sport_key="default"):
                     over25_mkt = oc["price"]
     if over25_mkt:
         ev_over = over25 * over25_mkt - 1
-        if ev_over > 0.04 and over25 > 0.15:
+        if ev_over > 0.04 and over25 > 0.15 and over25_mkt <= 5.0 and passes_sanity(over25, over25_mkt):
             value_bets.append({
                 "label": "Over 2.5 Goals", "odds": over25_mkt,
                 "ev": ev_over, "prob": over25
@@ -599,11 +608,16 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines += [
             f"*{i}. {vb['home']} vs {vb['away']}*",
             f"   {vb['league']}  ·  {fmt_kick(vb['kick'])}",
-            f"   Pick: *{vb['pick']}* @ {vb['odds']:.2f}",
-            f"   Model: {vb['prob'] * 100:.0f}%  ·  Edge: +{vb['ev'] * 100:.0f}%",
-            f"   Confidence: {vb['conf']:.0f}%  {conf_emoji(vb['conf'])}",
+            f"   Pick: *{vb['pick']}* @ {vb['odds']:.2f}  (model: {vb['prob'] * 100:.0f}% chance)",
+            f"   Edge vs market: +{vb['ev'] * 100:.0f}%",
+            f"   Match favourite confidence: {vb['conf']:.0f}%  {conf_emoji(vb['conf'])}",
             "",
         ]
+    lines.append(
+        "ℹ️ \"Match favourite confidence\" rates the model's certainty about "
+        "the overall match outcome — it is NOT the probability of the pick "
+        "shown above. Always check the pick's own % before betting.\n"
+    )
     lines.append("⚠️ Educational only. Bet responsibly.")
 
     # Save to DB
