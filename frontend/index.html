@@ -446,8 +446,8 @@ function matchCard(f,idx=0){
   const isExp=state.expandedId===f.id;
   const hasVal=f.oddsData?.valueBets?.length>0||pred?.valueBets?.length>0;
   const cc=pred?(pred.confidence>=68?'var(--green)':pred.confidence>=52?'var(--gold)':'var(--accent2)'):'var(--muted)';
-  const hLogo=f.home.logo?`<img src="${f.home.logo}" alt="" loading="lazy" onerror="this.style.display='none'">`:`<div style="font-size:18px">🏠</div>`;
-  const aLogo=f.away.logo?`<img src="${f.away.logo}" alt="" loading="lazy" onerror="this.style.display='none'">`:`<div style="font-size:18px">✈️</div>`;
+  const hLogo=f.home.logo?`<img src="${f.home.logo}" alt="" loading="lazy" onerror="this.outerHTML='<div style=\\'font-size:18px\\'>🏠</div>'">`:`<div style="font-size:18px">🏠</div>`;
+  const aLogo=f.away.logo?`<img src="${f.away.logo}" alt="" loading="lazy" onerror="this.outerHTML='<div style=\\'font-size:18px\\'>✈️</div>'">`:`<div style="font-size:18px">✈️</div>`;
   const score=isLive?`<div class="score-live">${f.goals.home??0}–${f.goals.away??0}</div>`:pred?`<div class="score-pred">${pred.score}</div>`:`<div class="score-pred" style="color:var(--muted)">?–?</div>`;
   const expand=pred?expandPanel(f,pred):`<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Loading…</div>`;
   return `<div class="match-card${isExp?' expanded':''}${hasVal?' has-value':''} card-in" id="card-${f.id}" style="animation-delay:${idx*50}ms" onclick="toggleCard('${f.id}')">
