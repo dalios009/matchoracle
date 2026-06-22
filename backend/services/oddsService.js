@@ -202,26 +202,12 @@ function buildPrediction(match, sport) {
   var numBooks = Math.min(hCons.n, dCons.n, aCons.n);
 
   // Step 4: expected goals
-  // Mismatch-aware total line: lopsided matches (e.g. heavy favourite vs weak
-  // underdog) tend to run HIGHER combined goals on average — the favourite
-  // often scores freely — not lower as a naive "low odds = tight game" guess
-  // would suggest. We measure mismatch via the log-ratio of the two outright
-  // odds and scale the total line up accordingly.
   var totalLine = estimateTotalXG(bms);
   if (totalLine === null) {
-    var minO = Math.min(hOdds, aOdds);
-    var maxO = Math.max(hOdds, aOdds);
-    var mismatch = Math.min(1, Math.log(maxO / minO) / Math.log(15));
-    totalLine = 2.3 + mismatch * 1.0;
+    var minOdds = Math.min(hOdds, aOdds);
+    totalLine = Math.min(3.6, Math.max(1.8, 1.5 + minOdds * 0.32));
   }
-  // Home/away goal split now scales directly and more aggressively with the
-  // probability gap (bH - bA), reaching up to 85/15 for one-sided mismatches
-  // instead of being capped near 70/30 — this is what actually lets the
-  // Poisson matrix produce 2-0/3-0/3-1 as the most likely score for clear
-  // favourites, instead of clustering everything around 1-0/1-1.
-  var probGap = pH - pA;
-  var homeShare = 0.5 + probGap * 0.6;
-  homeShare = Math.min(0.85, Math.max(0.15, homeShare));
+  var homeShare = 0.40 + (pH / (pH + pA + 0.01)) * 0.30;
   var hxg = parseFloat((totalLine * homeShare).toFixed(2));
   var axg = parseFloat((totalLine * (1 - homeShare)).toFixed(2));
 
@@ -441,47 +427,10 @@ function buildPrediction(match, sport) {
 }
 
 // ── FETCH LAYER ────────────────────────────────────────────────
-// Negative-result cache: when the Odds API quota is exhausted or we're
-// being rate-limited, remember that failure for a short window so a burst
-// of near-simultaneous requests (multiple date taps, page reloads, bot +
-// mini-app hitting the same minute) doesn't multiply the damage by retrying
-// the same dead request 9 times per call. Without this, one quota error
-// turned into dozens of wasted calls within seconds, as seen in production.
-var QUOTA_DEAD_UNTIL = { _global: 0 }; // per-sport-key timestamp, plus a global kill switch
-
-function isQuotaDead(sportKey) {
-  var now = Date.now();
-  if (QUOTA_DEAD_UNTIL._global > now) return true;
-  return (QUOTA_DEAD_UNTIL[sportKey] || 0) > now;
-}
-
-function markQuotaDead(sportKey, errorCode) {
-  var now = Date.now();
-  // OUT_OF_USAGE_CREDITS means the whole key is dead until quota resets —
-  // back off hard and globally so we don't burn remaining frequency budget
-  // hammering other sport keys in the same burst.
-  if (errorCode === 'OUT_OF_USAGE_CREDITS') {
-    QUOTA_DEAD_UNTIL._global = now + 5 * 60 * 1000; // 5 min global cooldown
-    logger.warn('OddsAPI quota exhausted — pausing ALL requests for 5 minutes');
-  } else if (errorCode === 'EXCEEDED_FREQ_LIMIT') {
-    QUOTA_DEAD_UNTIL[sportKey] = now + 30 * 1000; // 30s cooldown for this sport only
-  } else {
-    QUOTA_DEAD_UNTIL[sportKey] = now + 30 * 1000;
-  }
-}
-
 async function fetchSport(sport) {
   var ck = 'odds:' + sport.key;
   var c = cache.get(ck);
   if (c) return c;
-
-  // Short-circuit immediately if we already know the API is dead — this is
-  // what stops a burst of 5 calls from becoming 45 wasted requests.
-  if (isQuotaDead(sport.key)) {
-    logger.warn('Skipping ' + sport.key + ' — in cooldown after recent quota/rate error');
-    return [];
-  }
-
   for (var i = 0; i < 3; i++) {
     var markets = ['h2h,totals,btts', 'h2h,totals', 'h2h'][i];
     try {
@@ -491,18 +440,12 @@ async function fetchSport(sport) {
       });
       var d = r.data || [];
       logger.info(sport.name + ' (' + markets + '): ' + d.length + ' games');
-      // Cache successful results, including empty arrays — an empty result
-      // for a sport with no games today is valid and shouldn't be re-fetched
-      // every time either.
-      cache.set(ck, d, d.length > 0 ? 600 : 120);
+      if (d.length > 0) { cache.set(ck, d, 600); return d; }
       return d;
     } catch (e) {
       if (e.response && e.response.status === 422) { continue; }
-      var errBody = e.response ? e.response.data : null;
-      var errorCode = errBody && errBody.error_code;
-      var msg = errBody ? JSON.stringify(errBody) : e.message;
+      var msg = e.response ? JSON.stringify(e.response.data) : e.message;
       logger.error('OddsAPI ' + sport.key + ': ' + msg);
-      markQuotaDead(sport.key, errorCode);
       return [];
     }
   }
@@ -542,3 +485,4 @@ module.exports = {
   getFixturesByDateFromOdds: getFixturesByDateFromOdds,
   findOddsForFixture: findOddsForFixture,
 };
+
