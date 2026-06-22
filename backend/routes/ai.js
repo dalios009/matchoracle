@@ -3,8 +3,7 @@ const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const NodeCache = require('node-cache');
 const { analyseMatch, askScout } = require('../services/aiService');
-const { getTeamForm, getH2H, getFixturesByDate, formatDate } = require('../services/footballApi');
-const { generatePrediction } = require('../services/predictionEngine');
+const { getFixturesByDateFromOdds } = require('../services/oddsService');
 
 const aiLimiter = rateLimit({
   windowMs: 60000,
@@ -13,6 +12,29 @@ const aiLimiter = rateLimit({
 });
 
 const aiCache = new NodeCache({ stdTTL: 1800 });
+
+function formatDate(date) {
+  return new Date(date).toISOString().split('T')[0];
+}
+
+async function findFixtureById(fixtureId) {
+  const today = formatDate(new Date());
+  const yesterday = formatDate(new Date(Date.now() - 86400000));
+  const tomorrow = formatDate(new Date(Date.now() + 86400000));
+
+  // Check today first (cheap — covers the vast majority of requests)
+  let fixtures = await getFixturesByDateFromOdds(today);
+  let fixture = fixtures.find(f => String(f.id) === String(fixtureId));
+  if (fixture) return fixture;
+
+  // Fall back to yesterday/tomorrow for timezone edge cases
+  const [y, t] = await Promise.all([
+    getFixturesByDateFromOdds(yesterday),
+    getFixturesByDateFromOdds(tomorrow),
+  ]);
+  fixtures = [...fixtures, ...y, ...t];
+  return fixtures.find(f => String(f.id) === String(fixtureId)) || null;
+}
 
 router.post('/analyse', aiLimiter, async (req, res, next) => {
   try {
@@ -23,43 +45,33 @@ router.post('/analyse', aiLimiter, async (req, res, next) => {
     const cached = aiCache.get(cKey);
     if (cached) return res.json(cached);
 
-    const today = formatDate(new Date());
-let fixtures = await getFixturesByDate(today);
+    const fixture = await findFixtureById(fixtureId);
+    if (!fixture || !fixture.oddsData) {
+      return res.status(404).json({ error: 'Fixture or odds not found.' });
+    }
 
-// Also check yesterday and tomorrow in case of timezone differences
-if (!fixtures.find(f => f.id === parseInt(fixtureId))) {
-  const yesterday = formatDate(new Date(Date.now() - 86400000));
-  const tomorrow = formatDate(new Date(Date.now() + 86400000));
-  const [y, t] = await Promise.all([
-    getFixturesByDate(yesterday),
-    getFixturesByDate(tomorrow),
-  ]);
-  fixtures = [...fixtures, ...y, ...t];
-}
-
-const fixture = fixtures.find(f => f.id === parseInt(fixtureId));
-if (!fixture) return res.status(404).json({ error: 'Fixture not found.' });
-
-
-    const [homeForm, awayForm, h2h] = await Promise.allSettled([
-      getTeamForm(fixture.home.id, 5),
-      getTeamForm(fixture.away.id, 5),
-      getH2H(fixture.home.id, fixture.away.id, 5),
-    ]);
-
-    const prediction = generatePrediction(
-      fixture,
-      homeForm.value || null,
-      awayForm.value || null,
-      h2h.value || null,
-    );
+    const od = fixture.oddsData;
+    // Build a "prediction" object shaped the way analyseMatch expects —
+    // sourced entirely from oddsService output (the same data the
+    // /predictions endpoint and frontend already use), so AI Scout's
+    // analysis always matches what the user sees in the match card.
+    const prediction = {
+      fixtureId: fixture.id,
+      score: od.score,
+      xG: od.xG,
+      probabilities: od.probabilities,
+      confidence: od.confidence,
+      bestBets: od.bestBets || [],
+      valueBets: od.valueBets || [],
+      topScores: od.topScores || [],
+    };
 
     const result = await analyseMatch(
       fixture,
       prediction,
-      homeForm.value || null,
-      awayForm.value || null,
-      h2h.value || null,
+      null, // form data not available from oddsService — AI works off market + Poisson + team ratings instead
+      null,
+      null,
     );
 
     aiCache.set(cKey, result);
@@ -79,7 +91,7 @@ router.post('/scout', aiLimiter, async (req, res, next) => {
       return res.status(400).json({ error: 'Question too long (max 500 chars).' });
     }
 
-    const fixtures = await getFixturesByDate(formatDate(new Date()));
+    const fixtures = await getFixturesByDateFromOdds(formatDate(new Date()));
     const answer = await askScout(question, fixtures.slice(0, 12));
     res.json({ answer, generatedAt: new Date().toISOString() });
   } catch (err) {

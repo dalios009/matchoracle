@@ -17,13 +17,15 @@ Rules:
 - Tone: professional but approachable`;
 
 function buildMatchPrompt(fixture, prediction, homeForm, awayForm, h2hData) {
+  const hr = fixture.home?.rating;
+  const ar = fixture.away?.rating;
   return [
     `Match: ${fixture.home.name} vs ${fixture.away.name}`,
     `League: ${fixture.leagueName} | Date: ${fixture.date}`,
     ``,
-    `FORM (last 5):`,
-    `${fixture.home.name}: ${(homeForm?.form||[]).join('-')||'N/A'} | Avg scored: ${homeForm?.avgScored??'N/A'} | Avg conceded: ${homeForm?.avgConceded??'N/A'}`,
-    `${fixture.away.name}: ${(awayForm?.form||[]).join('-')||'N/A'} | Avg scored: ${awayForm?.avgScored??'N/A'} | Avg conceded: ${awayForm?.avgConceded??'N/A'}`,
+    `TEAM STRENGTH (relative to league average, 1.0 = average):`,
+    `${fixture.home.name}: Attack ${hr?.atk ?? 'N/A'} | Defense ${hr?.def ?? 'N/A'}`,
+    `${fixture.away.name}: Attack ${ar?.atk ?? 'N/A'} | Defense ${ar?.def ?? 'N/A'}`,
     ``,
     `PREDICTION:`,
     `Score: ${prediction.score} | xG: ${prediction.xG.home} - ${prediction.xG.away}`,

@@ -5,20 +5,23 @@
 const axios = require('axios');
 const NodeCache = require('node-cache');
 const logger = require('../utils/logger');
+const { getTeamRating, getLeagueBaseline } = require('./teamRatings');
 
 const cache = new NodeCache({ stdTTL: 600 });
 const KEY = process.env.ODDS_API_KEY;
 const BASE = 'https://api.the-odds-api.com/v4';
 
 const SPORTS = [
-  { key: 'soccer_epl',                name: 'Premier League',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', lk: 'pl' },
+  { key: 'soccer_epl',                name: 'Premier League',     flag: '🏴', lk: 'pl' },
   { key: 'soccer_spain_la_liga',      name: 'La Liga',            flag: '🇪🇸', lk: 'll' },
   { key: 'soccer_uefa_champs_league', name: 'Champions League',   flag: '⭐', lk: 'cl' },
+  { key: 'soccer_uefa_europa_league', name: 'Europa League',      flag: '🏆', lk: 'el' },
   { key: 'soccer_germany_bundesliga', name: 'Bundesliga',         flag: '🇩🇪', lk: 'bl' },
   { key: 'soccer_italy_serie_a',      name: 'Serie A',            flag: '🇮🇹', lk: 'sa' },
   { key: 'soccer_france_ligue_one',   name: 'Ligue 1',            flag: '🇫🇷', lk: 'l1' },
-  { key: 'soccer_efl_champ',          name: 'Championship',       flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', lk: 'ch' },
+  { key: 'soccer_efl_champ',          name: 'Championship',       flag: '🏴', lk: 'ch' },
   { key: 'soccer_usa_mls',            name: 'MLS',                flag: '🇺🇸', lk: 'mls' },
+  { key: 'soccer_brazil_campeonato',  name: 'Brasileirao',        flag: '🇧🇷', lk: 'br' },
   { key: 'soccer_fifa_world_cup',     name: 'FIFA World Cup 2026',flag: '🌍', lk: 'wc' },
 ];
 
@@ -201,15 +204,37 @@ function buildPrediction(match, sport) {
   var agreementScore = Math.max(0, Math.min(1, 1 - avgStdDev / 0.6)); // 0=disagreement,1=agreement
   var numBooks = Math.min(hCons.n, dCons.n, aCons.n);
 
-  // Step 4: expected goals
+  // Step 4: expected goals — blend Dixon-Coles team model with market totals line
+  var leagueBase = getLeagueBaseline(sport.key);
+  var homeRating = getTeamRating(home);
+  var awayRating = getTeamRating(away);
+  var hxgTeamModel = leagueBase.home * homeRating.atk * awayRating.def;
+  var axgTeamModel = leagueBase.away * awayRating.atk * homeRating.def;
+
   var totalLine = estimateTotalXG(bms);
   if (totalLine === null) {
     var minOdds = Math.min(hOdds, aOdds);
     totalLine = Math.min(3.6, Math.max(1.8, 1.5 + minOdds * 0.32));
   }
-  var homeShare = 0.40 + (pH / (pH + pA + 0.01)) * 0.30;
-  var hxg = parseFloat((totalLine * homeShare).toFixed(2));
-  var axg = parseFloat((totalLine * (1 - homeShare)).toFixed(2));
+
+  // Calibrate team-model total against market total (50/50) — keeps goal
+  // expectancy anchored to the market while letting team strength shape
+  // the home/away split and the shape of the distribution.
+  var teamModelTotal = hxgTeamModel + axgTeamModel;
+  var calibScale = teamModelTotal > 0 ? (0.5 * teamModelTotal + 0.5 * totalLine) / teamModelTotal : 1;
+  var hxgTeam = hxgTeamModel * calibScale;
+  var axgTeam = axgTeamModel * calibScale;
+
+  // Home/away split: blend market-implied share (40%) with Dixon-Coles
+  // team-strength share (60%) — team ratings get the larger say once we
+  // know roughly how many goals the match should produce in total.
+  var marketHomeShare = pH / (pH + pA + 0.01);
+  var teamHomeShare = hxgTeam / Math.max(hxgTeam + axgTeam, 0.01);
+  var homeShare = 0.40 * marketHomeShare + 0.60 * teamHomeShare;
+
+  var blendedTotal = (teamModelTotal > 0 ? (hxgTeam + axgTeam) : totalLine);
+  var hxg = parseFloat(Math.max(0.30, Math.min(5.0, blendedTotal * homeShare)).toFixed(2));
+  var axg = parseFloat(Math.max(0.20, Math.min(4.5, blendedTotal * (1 - homeShare))).toFixed(2));
 
   // Step 5: Poisson score matrix
   var matrix = scoreMatrix(hxg, axg);
@@ -300,13 +325,15 @@ function buildPrediction(match, sport) {
   var estCorners = parseFloat((8.5 + (hxg + axg - 2.5) * 0.8).toFixed(1));
   var estCards = parseFloat((3.2 + competitiveness * 1.3).toFixed(1));
 
-  // Step 12: confidence score — blends prediction sharpness + bookmaker agreement + sample size
+  // Step 12: confidence score — blends prediction sharpness + bookmaker agreement + sample size + team data quality
   var maxP = Math.max(bH, bD, bA);
   var topScoreP = top5[0][1];
   var sharpness = (maxP * 0.55 + topScoreP * 5 * 0.25) * 100;
   var agreementBonus = agreementScore * 12;
   var sampleBonus = Math.min(8, numBooks * 0.8);
-  var conf = Math.min(96, Math.max(32, sharpness + agreementBonus + sampleBonus));
+  // Bonus when both teams are in our ratings database (vs unknown 1.0/1.0 default)
+  var knownTeamsBonus = (homeRating.atk !== 1.0 ? 3 : 0) + (awayRating.atk !== 1.0 ? 3 : 0);
+  var conf = Math.min(96, Math.max(32, sharpness + agreementBonus + sampleBonus + knownTeamsBonus));
 
   // Step 13: value bets — EV using the BLENDED probability vs REAL market odds
   // (the genuine "edge" signal: where our ensemble disagrees with the market)
@@ -381,8 +408,8 @@ function buildPrediction(match, sport) {
     date: match.commence_time,
     time: new Date(match.commence_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }),
     status: 'NS', elapsed: null,
-    home: { id: match.id + '_h', name: home, logo: null },
-    away: { id: match.id + '_a', name: away, logo: null },
+    home: { id: match.id + '_h', name: home, logo: null, rating: homeRating },
+    away: { id: match.id + '_a', name: away, logo: null, rating: awayRating },
     goals: { home: null, away: null },
     oddsData: {
       bookmaker: bms.length + ' bookmakers (sharp-weighted consensus)',

@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 # ── LEAGUES ────────────────────────────────────────────────────
 LEAGUES = {
+    "🌍 FIFA World Cup 2026": "soccer_fifa_world_cup",
     "⚽ Premier League":    "soccer_epl",
     "🇪🇸 La Liga":          "soccer_spain_la_liga",
     "🇩🇪 Bundesliga":       "soccer_germany_bundesliga",
@@ -37,6 +38,89 @@ LEAGUES = {
     "🇦🇷 Primera División": "soccer_argentina_primera_division",
 }
 LEAGUE_KEYS = {v: k for k, v in LEAGUES.items()}
+
+# ── LEAGUE BASELINES (goals per game, 3-season avg) ─────────────
+LEAGUE_BASELINES = {
+    "soccer_epl":                        {"home": 1.53, "away": 1.29},
+    "soccer_spain_la_liga":              {"home": 1.50, "away": 1.24},
+    "soccer_germany_bundesliga":         {"home": 1.72, "away": 1.44},
+    "soccer_italy_serie_a":              {"home": 1.46, "away": 1.25},
+    "soccer_france_ligue_one":           {"home": 1.44, "away": 1.24},
+    "soccer_uefa_champs_league":         {"home": 1.65, "away": 1.40},
+    "soccer_uefa_europa_league":         {"home": 1.55, "away": 1.32},
+    "soccer_usa_mls":                    {"home": 1.55, "away": 1.32},
+    "soccer_brazil_campeonato":          {"home": 1.42, "away": 1.18},
+    "soccer_argentina_primera_division": {"home": 1.38, "away": 1.15},
+    "soccer_fifa_world_cup":             {"home": 1.42, "away": 1.23},
+    "default":                           {"home": 1.50, "away": 1.28},
+}
+
+# ── TEAM STRENGTH RATINGS ────────────────────────────────────────
+# atk  > 1.0 = scores more than league average
+# def_ < 1.0 = concedes less than league average (better defense)
+TEAM_RATINGS = {
+    "Arsenal": {"atk": 1.38, "def_": 0.68}, "Manchester City": {"atk": 1.55, "def_": 0.62},
+    "Liverpool": {"atk": 1.52, "def_": 0.70}, "Chelsea": {"atk": 1.15, "def_": 0.85},
+    "Manchester United": {"atk": 1.05, "def_": 1.05}, "Tottenham": {"atk": 1.20, "def_": 0.95},
+    "Tottenham Hotspur": {"atk": 1.20, "def_": 0.95}, "Newcastle": {"atk": 1.18, "def_": 0.82},
+    "Newcastle United": {"atk": 1.18, "def_": 0.82}, "Aston Villa": {"atk": 1.22, "def_": 0.88},
+    "Brighton": {"atk": 1.10, "def_": 0.92}, "West Ham United": {"atk": 0.95, "def_": 1.10},
+    "Brentford": {"atk": 1.05, "def_": 1.00}, "Fulham": {"atk": 0.92, "def_": 1.02},
+    "Crystal Palace": {"atk": 0.85, "def_": 1.05}, "Wolves": {"atk": 0.82, "def_": 1.08},
+    "Everton": {"atk": 0.78, "def_": 1.12}, "Nottingham Forest": {"atk": 0.88, "def_": 0.95},
+    "Bournemouth": {"atk": 0.90, "def_": 1.08}, "Leicester City": {"atk": 0.85, "def_": 1.15},
+    "Ipswich Town": {"atk": 0.72, "def_": 1.25}, "Southampton": {"atk": 0.65, "def_": 1.38},
+    "Sunderland": {"atk": 0.80, "def_": 1.10}, "Leeds United": {"atk": 0.88, "def_": 1.08},
+    "Real Madrid": {"atk": 1.62, "def_": 0.58}, "Barcelona": {"atk": 1.58, "def_": 0.65},
+    "Atletico Madrid": {"atk": 1.20, "def_": 0.68}, "Sevilla": {"atk": 0.95, "def_": 1.02},
+    "Real Sociedad": {"atk": 1.05, "def_": 0.92}, "Villarreal": {"atk": 1.08, "def_": 0.98},
+    "Athletic Club": {"atk": 0.98, "def_": 0.95}, "Real Betis": {"atk": 1.00, "def_": 1.00},
+    "Valencia": {"atk": 0.88, "def_": 1.10}, "Osasuna": {"atk": 0.82, "def_": 1.05},
+    "Celta Vigo": {"atk": 0.92, "def_": 1.12}, "Getafe": {"atk": 0.75, "def_": 1.02},
+    "Girona": {"atk": 1.05, "def_": 1.00}, "Rayo Vallecano": {"atk": 0.78, "def_": 1.08},
+    "Mallorca": {"atk": 0.72, "def_": 1.05}, "Alaves": {"atk": 0.68, "def_": 1.12},
+    "Espanyol": {"atk": 0.75, "def_": 1.10},
+    "Bayern Munich": {"atk": 1.80, "def_": 0.62}, "Borussia Dortmund": {"atk": 1.45, "def_": 0.88},
+    "RB Leipzig": {"atk": 1.35, "def_": 0.78}, "Bayer Leverkusen": {"atk": 1.42, "def_": 0.72},
+    "Eintracht Frankfurt": {"atk": 1.15, "def_": 0.98}, "Wolfsburg": {"atk": 0.98, "def_": 1.02},
+    "Freiburg": {"atk": 0.92, "def_": 0.95}, "Union Berlin": {"atk": 0.85, "def_": 1.05},
+    "Stuttgart": {"atk": 1.10, "def_": 0.95},
+    "Inter Milan": {"atk": 1.45, "def_": 0.65}, "Napoli": {"atk": 1.38, "def_": 0.72},
+    "AC Milan": {"atk": 1.28, "def_": 0.78}, "Juventus": {"atk": 1.15, "def_": 0.75},
+    "AS Roma": {"atk": 1.12, "def_": 0.92}, "Lazio": {"atk": 1.10, "def_": 0.95},
+    "Atalanta": {"atk": 1.35, "def_": 0.88}, "Fiorentina": {"atk": 1.05, "def_": 1.00},
+    "Bologna": {"atk": 1.00, "def_": 0.98}, "Torino": {"atk": 0.88, "def_": 1.05},
+    "Paris Saint-Germain": {"atk": 1.75, "def_": 0.58}, "Marseille": {"atk": 1.25, "def_": 0.92},
+    "Lyon": {"atk": 1.15, "def_": 0.98}, "Monaco": {"atk": 1.30, "def_": 0.88},
+    "Lille": {"atk": 1.05, "def_": 0.90}, "Nice": {"atk": 1.02, "def_": 0.95},
+    "Rennes": {"atk": 0.95, "def_": 1.02}, "Lens": {"atk": 1.00, "def_": 0.98},
+    "France": {"atk": 1.55, "def_": 0.62}, "Brazil": {"atk": 1.52, "def_": 0.65},
+    "England": {"atk": 1.38, "def_": 0.68}, "Spain": {"atk": 1.45, "def_": 0.65},
+    "Germany": {"atk": 1.42, "def_": 0.70}, "Argentina": {"atk": 1.48, "def_": 0.68},
+    "Portugal": {"atk": 1.40, "def_": 0.72}, "Netherlands": {"atk": 1.35, "def_": 0.75},
+    "Belgium": {"atk": 1.28, "def_": 0.78}, "Italy": {"atk": 1.15, "def_": 0.72},
+    "Croatia": {"atk": 1.12, "def_": 0.82}, "Uruguay": {"atk": 1.10, "def_": 0.80},
+    "Colombia": {"atk": 1.08, "def_": 0.88}, "Mexico": {"atk": 1.00, "def_": 0.92},
+    "USA": {"atk": 0.95, "def_": 0.98}, "Morocco": {"atk": 0.98, "def_": 0.85},
+    "Senegal": {"atk": 0.95, "def_": 0.95}, "Japan": {"atk": 0.98, "def_": 0.90},
+    "South Korea": {"atk": 0.92, "def_": 0.98}, "Ghana": {"atk": 0.88, "def_": 1.05},
+    "Switzerland": {"atk": 1.05, "def_": 0.88}, "Denmark": {"atk": 1.08, "def_": 0.85},
+    "Norway": {"atk": 1.10, "def_": 0.95}, "Sweden": {"atk": 1.00, "def_": 0.92},
+    "Poland": {"atk": 0.95, "def_": 0.98}, "Serbia": {"atk": 1.02, "def_": 0.95},
+    "Turkey": {"atk": 1.05, "def_": 1.00}, "Saudi Arabia": {"atk": 0.80, "def_": 1.10},
+    "Nigeria": {"atk": 0.90, "def_": 1.02}, "Egypt": {"atk": 0.85, "def_": 0.98},
+}
+
+def get_team_rating(name):
+    if not name:
+        return {"atk": 1.0, "def_": 1.0}
+    if name in TEAM_RATINGS:
+        return TEAM_RATINGS[name]
+    nl = name.lower()
+    for k, v in TEAM_RATINGS.items():
+        if k.lower() in nl or nl in k.lower():
+            return v
+    return {"atk": 1.0, "def_": 1.0}
 
 # ── DATABASE ───────────────────────────────────────────────────
 def init_db():
@@ -168,7 +252,7 @@ def score_matrix(hxg, axg, mx=6):
         for h in range(mx + 1) for a in range(mx + 1)
     }
 
-def predict_game(game):
+def predict_game(game, sport_key="default"):
     bms = game.get("bookmakers", [])
     if not bms:
         return None
@@ -185,10 +269,28 @@ def predict_game(game):
     tot = rh + rd + ra
     ph, pd, pa = rh / tot, rd / tot, ra / tot
 
-    # Expected goals from totals market
+    # Dixon-Coles xG: league baseline x team attack x opponent defense
+    ls = LEAGUE_BASELINES.get(sport_key, LEAGUE_BASELINES["default"])
+    hr = get_team_rating(home)
+    ar = get_team_rating(away)
+    hxg_team = ls["home"] * hr["atk"] * ar["def_"]
+    axg_team = ls["away"] * ar["atk"] * hr["def_"]
+
+    # Calibrate team-model total against bookmaker totals line (50/50)
     total_line = xg_from_totals(bms)
-    share = 0.4 + (ph / (ph + pa + 0.01)) * 0.3
-    hxg, axg = total_line * share, total_line * (1 - share)
+    team_total = hxg_team + axg_team
+    if team_total > 0:
+        scale = (0.5 * team_total + 0.5 * total_line) / team_total
+        hxg_team *= scale
+        axg_team *= scale
+
+    # Home/away split: 40% market-implied + 60% Dixon-Coles team strength
+    mkt_share = ph / (ph + pa + 0.01)
+    team_share = hxg_team / max(hxg_team + axg_team, 0.01)
+    share = 0.40 * mkt_share + 0.60 * team_share
+    blended_total = hxg_team + axg_team
+    hxg = max(0.30, min(5.0, blended_total * share))
+    axg = max(0.20, min(4.5, blended_total * (1 - share)))
 
     # Score matrix via Poisson
     mat = score_matrix(hxg, axg)
@@ -198,10 +300,10 @@ def predict_game(game):
     mat_d = sum(p for (h, a), p in mat.items() if h == a)
     mat_a = sum(p for (h, a), p in mat.items() if h < a)
 
-    # Blend: 60% market + 40% Poisson
-    bh = 0.6 * ph + 0.4 * mat_h
-    bd = 0.6 * pd + 0.4 * mat_d
-    ba = 0.6 * pa + 0.4 * mat_a
+    # Blend: 55% market + 45% Poisson (team data now informs the Poisson side)
+    bh = 0.55 * ph + 0.45 * mat_h
+    bd = 0.55 * pd + 0.45 * mat_d
+    ba = 0.55 * pa + 0.45 * mat_a
     bt = bh + bd + ba
     bh, bd, ba = bh / bt, bd / bt, ba / bt
 
@@ -213,9 +315,10 @@ def predict_game(game):
     # Over/Under 2.5
     over25 = sum(p for (h, a), p in mat.items() if h + a > 2)
 
-    # Confidence score
+    # Confidence score — known teams in our ratings DB give a small boost
     max_p = max(bh, bd, ba)
-    conf = min(99, max(30, (max_p * 0.65 + top_scores[0][1] * 5 * 0.35) * 100))
+    known_bonus = (3 if hr["atk"] != 1.0 else 0) + (3 if ar["atk"] != 1.0 else 0)
+    conf = min(99, max(30, (max_p * 0.65 + top_scores[0][1] * 5 * 0.35) * 100 + known_bonus))
 
     # Value bets (EV > 8%)
     value_bets = []
@@ -264,6 +367,7 @@ def predict_game(game):
         "top_scores": top_scores,
         "ht_top": ht_top,
         "hxg": hxg, "axg": axg,
+        "home_rating": hr, "away_rating": ar,
         "btts": btts, "over25": over25,
         "value_bets": value_bets,
         "odds": {"home": h_odds, "draw": d_odds, "away": a_odds},
@@ -342,8 +446,8 @@ def fmt_prediction(pred, league_name):
         f"🏆 {league_name}",
         f"⏰ {fmt_kick(pred['commence_time'])}",
         "",
-        f"🏠 {pred['home']}",
-        f"✈️  {pred['away']}",
+        f"🏠 {pred['home']}  (ATK {pred['home_rating']['atk']:.2f} / DEF {pred['home_rating']['def_']:.2f})",
+        f"✈️  {pred['away']}  (ATK {pred['away_rating']['atk']:.2f} / DEF {pred['away_rating']['def_']:.2f})",
         "",
         "📊 PREDICTION",
         f"  Result:     {pred['result']}",
@@ -432,7 +536,7 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for league_name, sport_key in list(LEAGUES.items())[:6]:
         games = await fetch_odds(sport_key)
         for game in games[:8]:
-            pred = predict_game(game)
+            pred = predict_game(game, sport_key)
             if pred and pred["value_bets"]:
                 for vb in pred["value_bets"]:
                     all_value.append({
@@ -654,7 +758,7 @@ async def cb_league(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ No upcoming games found.")
         return
 
-    preds = [p for g in games[:12] if (p := predict_game(g))]
+    preds = [p for g in games[:12] if (p := predict_game(g, sport_key))]
     if not preds:
         await query.edit_message_text("😕 Could not generate predictions.")
         return
@@ -837,7 +941,7 @@ async def cb_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not games:
         await query.edit_message_text("❌ No games found.")
         return
-    preds = [p for g in games[:5] if (p := predict_game(g))]
+    preds = [p for g in games[:5] if (p := predict_game(g, sport_key))]
     if not preds:
         await query.edit_message_text("❌ Could not generate report.")
         return
@@ -958,7 +1062,7 @@ async def send_value_alerts(ctx: ContextTypes.DEFAULT_TYPE):
     for league_name, sport_key in list(LEAGUES.items())[:4]:
         games = await fetch_odds(sport_key)
         for game in games[:6]:
-            pred = predict_game(game)
+            pred = predict_game(game, sport_key)
             if pred and pred["value_bets"]:
                 for vb in pred["value_bets"]:
                     if vb["ev"] >= 0.10:
@@ -1091,7 +1195,9 @@ def main():
     app.job_queue.run_repeating(verify_predictions, interval=21600, first=300)
 
     log.info("MatchOracle Pro bot starting...")
-    app.run_polling(drop_pending_updates=True)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(app.run_polling(drop_pending_updates=True))
 
 if __name__ == "__main__":
     main()

@@ -306,10 +306,11 @@ window.MATCHORACLE_CONFIG=window.MATCHORACLE_CONFIG||{apiBase:'https://matchorac
 const API_BASE=window.MATCHORACLE_CONFIG.apiBase;
 
 const LEAGUES=[
-  {key:'all',label:'🌍 All'},{key:'pl',label:'🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League'},
-  {key:'ll',label:'🇪🇸 La Liga'},{key:'cl',label:'⭐ UCL'},
+  {key:'all',label:'🌍 All'},{key:'pl',label:'🏴 Premier League'},
+  {key:'ll',label:'🇪🇸 La Liga'},{key:'cl',label:'⭐ UCL'},{key:'el',label:'🏆 UEL'},
   {key:'bl',label:'🇩🇪 Bundesliga'},{key:'sa',label:'🇮🇹 Serie A'},
-  {key:'l1',label:'🇫🇷 Ligue 1'},{key:'ch',label:'🏴󠁧󠁢󠁥󠁮󠁧󠁿 Championship'},{key:'mls',label:'🇺🇸 MLS'},
+  {key:'l1',label:'🇫🇷 Ligue 1'},{key:'ch',label:'🏴 Championship'},{key:'mls',label:'🇺🇸 MLS'},
+  {key:'br',label:'🇧🇷 Brasileirao'},{key:'wc',label:'🌍 World Cup'},
 ];
 const QUICK_QS=['Best value bets today?','Top BTTS picks?','Safest home wins?','Best Over 2.5?','Biggest upsets today?'];
 
@@ -709,7 +710,7 @@ function navigate(page){
 function demoFixtures(){
   const d=state.activeDate;
   return [
-    {id:'d1',leagueKey:'pl',leagueName:'Premier League',leagueFlag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿',date:d+'T15:00:00Z',time:'15:00',status:'NS',elapsed:null,
+    {id:'d1',leagueKey:'pl',leagueName:'Premier League',leagueFlag:'🏴',date:d+'T15:00:00Z',time:'15:00',status:'NS',elapsed:null,
      home:{id:'d1h',name:'Arsenal',logo:'https://media.api-sports.io/football/teams/42.png'},
      away:{id:'d1a',name:'Chelsea',logo:'https://media.api-sports.io/football/teams/49.png'},
      goals:{home:null,away:null},
