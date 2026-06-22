@@ -6,7 +6,7 @@ const axios = require('axios');
 const NodeCache = require('node-cache');
 const logger = require('../utils/logger');
 const { getTeamRating, getLeagueBaseline } = require('./teamRatings');
-const { getAllLiveRatings } = require('./historicalData');
+const { getAllLiveRatings, getAllCrests } = require('./historicalData');
 
 const cache = new NodeCache({ stdTTL: 600 });
 const KEY = process.env.ODDS_API_KEY;
@@ -176,7 +176,51 @@ function calibrate(p) {
 }
 
 // ── MAIN PREDICTION BUILDER ────────────────────────────────────
-function buildPrediction(match, sport, liveRatings) {
+// Fallback flag CDN for national teams (World Cup etc.) not covered by
+// football-data.org's tracked club/cup competitions. flagcdn.com is free,
+// no API key, no rate limit for this kind of low-volume use.
+const COUNTRY_ISO = {
+  'Argentina': 'ar', 'Australia': 'au', 'Austria': 'at', 'Belgium': 'be',
+  'Brazil': 'br', 'Cameroon': 'cm', 'Canada': 'ca', 'Chile': 'cl',
+  'Colombia': 'co', 'Croatia': 'hr', 'Denmark': 'dk', 'Ecuador': 'ec',
+  'Egypt': 'eg', 'England': 'gb-eng', 'France': 'fr', 'Germany': 'de',
+  'Ghana': 'gh', 'Iran': 'ir', 'Italy': 'it', 'Ivory Coast': 'ci',
+  'Japan': 'jp', 'Jordan': 'jo', 'Mexico': 'mx', 'Morocco': 'ma',
+  'Netherlands': 'nl', 'New Zealand': 'nz', 'Nigeria': 'ng', 'Norway': 'no',
+  'Panama': 'pa', 'Paraguay': 'py', 'Peru': 'pe', 'Poland': 'pl',
+  'Portugal': 'pt', 'Qatar': 'qa', 'Saudi Arabia': 'sa', 'Senegal': 'sn',
+  'Serbia': 'rs', 'South Korea': 'kr', 'Spain': 'es', 'Sweden': 'se',
+  'Switzerland': 'ch', 'Tunisia': 'tn', 'Turkey': 'tr', 'USA': 'us',
+  'United States': 'us', 'Uruguay': 'uy', 'Venezuela': 've', 'Algeria': 'dz',
+  'Bosnia and Herzegovina': 'ba', 'DR Congo': 'cd', 'Haiti': 'ht',
+  'Curacao': 'cw', 'Curaçao': 'cw', 'Uzbekistan': 'uz', 'Scotland': 'gb-sct',
+  'Wales': 'gb-wls', 'Ukraine': 'ua', 'Greece': 'gr', 'Czech Republic': 'cz',
+  'Hungary': 'hu', 'Slovakia': 'sk', 'Romania': 'ro',
+};
+
+function fallbackFlagUrl(teamName) {
+  const iso = COUNTRY_ISO[teamName];
+  return iso ? 'https://flagcdn.com/w80/' + iso + '.png' : null;
+}
+
+// Resolves the best available image for a team: real club crest (preferred,
+// from football-data.org), then real national flag (also from
+// football-data.org's `area.flag`), then a fuzzy-matched flag, then the
+// flagcdn.com fallback by country name. Returns null only if truly nothing
+// is available — the frontend already has a graceful 🏠/✈️ fallback for that.
+function resolveTeamImage(teamName, crests) {
+  if (crests) {
+    if (crests[teamName]) return crests[teamName].crest || crests[teamName].flag || null;
+    const nl = teamName.toLowerCase();
+    const fuzzyKey = Object.keys(crests).find(function (k) {
+      return k.toLowerCase().includes(nl) || nl.includes(k.toLowerCase());
+    });
+    if (fuzzyKey) return crests[fuzzyKey].crest || crests[fuzzyKey].flag || null;
+  }
+  return fallbackFlagUrl(teamName);
+}
+
+function buildPrediction(match, sport, liveRatings, crests) {
   var bms = match.bookmakers || [];
   if (!bms.length) return null;
 
@@ -417,8 +461,8 @@ function buildPrediction(match, sport, liveRatings) {
     date: match.commence_time,
     time: new Date(match.commence_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }),
     status: 'NS', elapsed: null,
-    home: { id: match.id + '_h', name: home, logo: null, rating: homeRating },
-    away: { id: match.id + '_a', name: away, logo: null, rating: awayRating },
+    home: { id: match.id + '_h', name: home, logo: resolveTeamImage(home, crests), rating: homeRating },
+    away: { id: match.id + '_a', name: away, logo: resolveTeamImage(away, crests), rating: awayRating },
     goals: { home: null, away: null },
     oddsData: {
       bookmaker: bms.length + ' bookmakers (sharp-weighted consensus)',
@@ -522,14 +566,15 @@ async function fetchSport(sport) {
 }
 
 async function getFixturesByDateFromOdds(dateStr) {
-  // Fetch live-computed team ratings once (internally cached 12h) and reuse
-  // across every fixture in this batch — this is what makes ratings reflect
-  // real recent results instead of the static hand-typed defaults.
+  // Fetch live-computed team ratings and crest/flag images once (both
+  // internally cached 12h) and reuse across every fixture in this batch.
   var liveRatings = {};
+  var crests = {};
   try {
     liveRatings = await getAllLiveRatings();
+    crests = await getAllCrests();
   } catch (e) {
-    logger.error('getAllLiveRatings failed, using static ratings only: ' + e.message);
+    logger.error('getAllLiveRatings/getAllCrests failed, using static fallbacks only: ' + e.message);
   }
 
   var results = await Promise.allSettled(SPORTS.map(function (s) { return fetchSport(s); }));
@@ -539,7 +584,7 @@ async function getFixturesByDateFromOdds(dateStr) {
     (r.value || []).forEach(function (game) {
       var d = new Date(game.commence_time).toISOString().split('T')[0];
       if (d !== dateStr) return;
-      var f = buildPrediction(game, SPORTS[i], liveRatings);
+      var f = buildPrediction(game, SPORTS[i], liveRatings, crests);
       if (f) out.push(f);
     });
   });
