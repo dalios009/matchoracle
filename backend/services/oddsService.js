@@ -338,15 +338,19 @@ function buildPrediction(match, sport) {
   // Step 13: value bets — EV using the BLENDED probability vs REAL market odds
   // (the genuine "edge" signal: where our ensemble disagrees with the market)
   //
-  // Sanity check: reject if our model's probability is more than 1.6x the
+  // Sanity check: reject if our model's probability is more than 1.5x the
   // market-implied probability. A gap that large from a consensus-odds-only
   // model is almost always model noise, not real insight — most often on
   // long-shot prices where small probability errors produce inflated EV%.
   function passesSanityCheck(modelP, odds) {
     var implied = 1 / odds;
-    return (modelP / implied) <= 1.6;
+    return (modelP / implied) <= 1.5;
   }
 
+  // Thresholds loosened from the original ev>0.06 + prob>0.22 + conf>=55
+  // combo, which was so strict together it almost never fired in practice.
+  // odds<=5.0 cap (was 4.5) still does the real work of filtering out
+  // unreliable long-shot "value" that's really just probability-estimate noise.
   var valueBets = [];
   [
     { label: home + ' Win', p: bH, odds: hOdds },
@@ -354,21 +358,21 @@ function buildPrediction(match, sport) {
     { label: away + ' Win', p: bA, odds: aOdds },
   ].forEach(function (v) {
     var ev = v.p * v.odds - 1;
-    if (ev > 0.06 && v.p > 0.22 && conf >= 55 && v.odds <= 4.5 && passesSanityCheck(v.p, v.odds)) {
+    if (ev > 0.04 && v.p > 0.15 && conf >= 45 && v.odds <= 5.0 && passesSanityCheck(v.p, v.odds)) {
       valueBets.push({ label: v.label, odds: v.odds, ev: ev, prob: v.p });
     }
   });
 
   // BTTS / Over 2.5 value checks — now uses REAL consensus odds, real EV formula
-  if (bttsRealOdds && conf >= 55) {
+  if (bttsRealOdds && conf >= 45) {
     var bttsEV = bttsVal * bttsRealOdds - 1;
-    if (bttsEV > 0.06 && bttsVal > 0.22 && passesSanityCheck(bttsVal, bttsRealOdds)) {
+    if (bttsEV > 0.04 && bttsVal > 0.15 && bttsRealOdds <= 5.0 && passesSanityCheck(bttsVal, bttsRealOdds)) {
       valueBets.push({ label: 'BTTS Yes', odds: bttsRealOdds, ev: bttsEV, prob: bttsVal });
     }
   }
-  if (over25RealOdds && conf >= 55) {
+  if (over25RealOdds && conf >= 45) {
     var over25EV = over25 * over25RealOdds - 1;
-    if (over25EV > 0.06 && over25 > 0.22 && passesSanityCheck(over25, over25RealOdds)) {
+    if (over25EV > 0.04 && over25 > 0.15 && over25RealOdds <= 5.0 && passesSanityCheck(over25, over25RealOdds)) {
       valueBets.push({ label: 'Over 2.5 Goals', odds: over25RealOdds, ev: over25EV, prob: over25 });
     }
   }
@@ -454,29 +458,41 @@ function buildPrediction(match, sport) {
 }
 
 // ── FETCH LAYER ────────────────────────────────────────────────
+// Credit-saving notes:
+// - Cache TTL raised from 10 min to 30 min — odds don't need to refresh
+//   that often, and this single change cuts API calls by ~3x.
+// - Only ONE request per sport per cache window now (was up to 3, trying
+//   different market combos). We request all markets in one shot and just
+//   accept whatever subset the API actually returns instead of retrying.
+// - Failures (errors, empty results, exhausted quota) are also cached
+//   briefly so a quota-exhausted key doesn't hammer the API on every
+//   single page load until the cache naturally expires.
+var FAILURE_CACHE_TTL = 120; // seconds — short, so real recoveries aren't blocked long
+var SUCCESS_CACHE_TTL = 1800; // 30 minutes
+
 async function fetchSport(sport) {
   var ck = 'odds:' + sport.key;
   var c = cache.get(ck);
-  if (c) return c;
-  for (var i = 0; i < 3; i++) {
-    var markets = ['h2h,totals,btts', 'h2h,totals', 'h2h'][i];
-    try {
-      var r = await axios.get(BASE + '/sports/' + sport.key + '/odds', {
-        params: { apiKey: KEY, regions: 'eu,uk,us', markets: markets, oddsFormat: 'decimal', dateFormat: 'iso' },
-        timeout: 10000,
-      });
-      var d = r.data || [];
-      logger.info(sport.name + ' (' + markets + '): ' + d.length + ' games');
-      if (d.length > 0) { cache.set(ck, d, 600); return d; }
-      return d;
-    } catch (e) {
-      if (e.response && e.response.status === 422) { continue; }
-      var msg = e.response ? JSON.stringify(e.response.data) : e.message;
-      logger.error('OddsAPI ' + sport.key + ': ' + msg);
-      return [];
-    }
+  if (c !== undefined) return c; // includes cached empty-array failures
+
+  try {
+    var r = await axios.get(BASE + '/sports/' + sport.key + '/odds', {
+      params: { apiKey: KEY, regions: 'eu,uk,us', markets: 'h2h,totals,btts', oddsFormat: 'decimal', dateFormat: 'iso' },
+      timeout: 10000,
+    });
+    var d = r.data || [];
+    logger.info(sport.name + ': ' + d.length + ' games');
+    cache.set(ck, d, d.length > 0 ? SUCCESS_CACHE_TTL : FAILURE_CACHE_TTL);
+    return d;
+  } catch (e) {
+    var status = e.response && e.response.status;
+    var msg = e.response ? JSON.stringify(e.response.data) : e.message;
+    logger.error('OddsAPI ' + sport.key + ' (' + status + '): ' + msg);
+    // Cache the failure briefly so repeated requests during an outage or
+    // quota exhaustion don't keep spending credits / retrying pointlessly.
+    cache.set(ck, [], FAILURE_CACHE_TTL);
+    return [];
   }
-  return [];
 }
 
 async function getFixturesByDateFromOdds(dateStr) {
@@ -512,4 +528,3 @@ module.exports = {
   getFixturesByDateFromOdds: getFixturesByDateFromOdds,
   findOddsForFixture: findOddsForFixture,
 };
-
