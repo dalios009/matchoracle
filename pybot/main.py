@@ -5,7 +5,7 @@ Features: Value Alerts, Bankroll Manager, Performance Tracker,
 """
 
 import asyncio, json, logging, math, os, sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,6 +17,7 @@ from telegram.ext import (
 # ── CONFIG ─────────────────────────────────────────────────────
 ODDS_API_KEY   = os.getenv("ODDS_API_KEY",   "a6346ea886763c5284b1f12fa1ac37ff")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
+FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY", "")  # real historical results -> live team ratings
 ODDS_BASE      = "https://api.the-odds-api.com/v4"
 DB_PATH        = "matchoracle.db"
 
@@ -121,6 +122,109 @@ def get_team_rating(name):
         if k.lower() in nl or nl in k.lower():
             return v
     return {"atk": 1.0, "def_": 1.0}
+
+
+# ── REAL HISTORICAL RATINGS (football-data.org) ──────────────────
+# Same approach as the backend's historicalData.js: compute attack/defense
+# ratings from actual recent results instead of the static hand-typed
+# TEAM_RATINGS dict above. Falls back to TEAM_RATINGS for any team with
+# too little recent data (new teams, minor World Cup nations, etc).
+FD_BASE = "https://api.football-data.org/v4"
+COMPETITION_CODES = ["PL", "PD", "BL1", "SA", "FL1", "CL", "DED", "PPL", "ELC", "BSA", "WC"]
+MIN_GAMES_FOR_LIVE_RATING = 4
+MAX_GAMES_CONSIDERED = 10
+
+_live_ratings_cache = {"data": {}, "ts": 0}
+LIVE_RATINGS_TTL = 43200  # 12 hours
+
+
+def _fetch_finished_matches_sync(code):
+    if not FOOTBALL_DATA_KEY:
+        return []
+    try:
+        date_to = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_from = (datetime.now(timezone.utc) - timedelta(days=100)).strftime("%Y-%m-%d")
+        r = httpx.get(
+            f"{FD_BASE}/competitions/{code}/matches",
+            headers={"X-Auth-Token": FOOTBALL_DATA_KEY},
+            params={"status": "FINISHED", "dateFrom": date_from, "dateTo": date_to},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return r.json().get("matches", [])
+        log.error("football-data.org %s: %s", code, r.status_code)
+        return []
+    except Exception as e:
+        log.error("football-data.org %s fetch error: %s", code, e)
+        return []
+
+
+def _compute_ratings_from_matches(matches):
+    team_games = {}
+    for m in matches:
+        score = m.get("score", {}).get("fullTime", {})
+        hg, ag = score.get("home"), score.get("away")
+        if hg is None or ag is None:
+            continue
+        home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
+        team_games.setdefault(home, []).append((hg, ag))
+        team_games.setdefault(away, []).append((ag, hg))
+
+    total_goals = sum(
+        (m.get("score", {}).get("fullTime", {}).get("home") or 0)
+        + (m.get("score", {}).get("fullTime", {}).get("away") or 0)
+        for m in matches if m.get("score", {}).get("fullTime", {}).get("home") is not None
+    )
+    total_games = sum(1 for m in matches if m.get("score", {}).get("fullTime", {}).get("home") is not None)
+    avg_goals_per_team = (total_goals / total_games / 2) if total_games > 0 else 1.3
+
+    ratings = {}
+    for team, games in team_games.items():
+        recent = games[-MAX_GAMES_CONSIDERED:]
+        if len(recent) < MIN_GAMES_FOR_LIVE_RATING:
+            continue
+        avg_scored = sum(g[0] for g in recent) / len(recent)
+        avg_conceded = sum(g[1] for g in recent) / len(recent)
+        ratings[team] = {
+            "atk": round(avg_scored / avg_goals_per_team, 3),
+            "def_": round(avg_conceded / avg_goals_per_team, 3),
+            "games_used": len(recent),
+            "source": "historical",
+        }
+    return ratings
+
+
+async def get_all_live_ratings():
+    """Fetch (and cache 12h) real team ratings computed from actual recent results."""
+    now = datetime.now(timezone.utc).timestamp()
+    if _live_ratings_cache["data"] and (now - _live_ratings_cache["ts"]) < LIVE_RATINGS_TTL:
+        return _live_ratings_cache["data"]
+
+    loop = asyncio.get_event_loop()
+    all_matches_lists = await asyncio.gather(
+        *[loop.run_in_executor(None, _fetch_finished_matches_sync, code) for code in COMPETITION_CODES]
+    )
+    merged = {}
+    for matches in all_matches_lists:
+        merged.update(_compute_ratings_from_matches(matches))
+
+    log.info("Live ratings computed for %d teams from real results", len(merged))
+    _live_ratings_cache["data"] = merged
+    _live_ratings_cache["ts"] = now
+    return merged
+
+
+async def get_live_team_rating(name, live_ratings):
+    """Look up one team in the live-computed ratings, falling back to the
+    static dict for teams with too little real data."""
+    if name in live_ratings and live_ratings[name].get("games_used", 0) >= MIN_GAMES_FOR_LIVE_RATING:
+        return live_ratings[name]
+    nl = name.lower()
+    for k, v in live_ratings.items():
+        if k.lower() in nl or nl in k.lower():
+            return v
+    fb = get_team_rating(name)
+    return {**fb, "games_used": 0, "source": "static-fallback"}
 
 # ── DATABASE ───────────────────────────────────────────────────
 def init_db():
@@ -252,7 +356,7 @@ def score_matrix(hxg, axg, mx=6):
         for h in range(mx + 1) for a in range(mx + 1)
     }
 
-def predict_game(game, sport_key="default"):
+def predict_game(game, sport_key="default", live_ratings=None):
     bms = game.get("bookmakers", [])
     if not bms:
         return None
@@ -269,10 +373,20 @@ def predict_game(game, sport_key="default"):
     tot = rh + rd + ra
     ph, pd, pa = rh / tot, rd / tot, ra / tot
 
-    # Dixon-Coles xG: league baseline x team attack x opponent defense
+    # Dixon-Coles xG: league baseline x team attack x opponent defense.
+    # Ratings prefer REAL computed values from actual recent results
+    # (live_ratings, from football-data.org) over the static hand-typed
+    # TEAM_RATINGS dict, falling back to static for teams with too little
+    # recent data.
     ls = LEAGUE_BASELINES.get(sport_key, LEAGUE_BASELINES["default"])
-    hr = get_team_rating(home)
-    ar = get_team_rating(away)
+    if live_ratings and home in live_ratings:
+        hr = live_ratings[home]
+    else:
+        hr = get_team_rating(home)
+    if live_ratings and away in live_ratings:
+        ar = live_ratings[away]
+    else:
+        ar = get_team_rating(away)
     hxg_team = ls["home"] * hr["atk"] * ar["def_"]
     axg_team = ls["away"] * ar["atk"] * hr["def_"]
 
@@ -482,13 +596,21 @@ def fmt_prediction(pred, league_name):
         for v in pred["value_bets"]
     ) or "  None detected"
 
+    def rating_tag(r):
+        src = r.get("source", "static")
+        if src == "historical":
+            return f"📡 live, last {r.get('games_used', '?')} games"
+        return "📋 static estimate"
+
     return "\n".join([
         sep(),
         f"🏆 {league_name}",
         f"⏰ {fmt_kick(pred['commence_time'])}",
         "",
         f"🏠 {pred['home']}  (ATK {pred['home_rating']['atk']:.2f} / DEF {pred['home_rating']['def_']:.2f})",
+        f"     {rating_tag(pred['home_rating'])}",
         f"✈️  {pred['away']}  (ATK {pred['away_rating']['atk']:.2f} / DEF {pred['away_rating']['def_']:.2f})",
+        f"     {rating_tag(pred['away_rating'])}",
         "",
         "📊 PREDICTION",
         f"  Result:     {pred['result']}",
@@ -573,11 +695,12 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     upsert_user(u.id, u.username, u.first_name)
     await update.message.reply_text("🔍 Scanning all leagues for value bets...")
 
+    live_ratings = await get_all_live_ratings()
     all_value = []
     for league_name, sport_key in list(LEAGUES.items()):
         games = await fetch_odds(sport_key)
         for game in games[:15]:
-            pred = predict_game(game, sport_key)
+            pred = predict_game(game, sport_key, live_ratings)
             if pred and pred["value_bets"]:
                 for vb in pred["value_bets"]:
                     all_value.append({
@@ -804,7 +927,8 @@ async def cb_league(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ No upcoming games found.")
         return
 
-    preds = [p for g in games[:12] if (p := predict_game(g, sport_key))]
+    live_ratings = await get_all_live_ratings()
+    preds = [p for g in games[:12] if (p := predict_game(g, sport_key, live_ratings))]
     if not preds:
         await query.edit_message_text("😕 Could not generate predictions.")
         return
@@ -987,7 +1111,8 @@ async def cb_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not games:
         await query.edit_message_text("❌ No games found.")
         return
-    preds = [p for g in games[:5] if (p := predict_game(g, sport_key))]
+    live_ratings = await get_all_live_ratings()
+    preds = [p for g in games[:5] if (p := predict_game(g, sport_key, live_ratings))]
     if not preds:
         await query.edit_message_text("❌ Could not generate report.")
         return
@@ -1104,11 +1229,12 @@ async def send_value_alerts(ctx: ContextTypes.DEFAULT_TYPE):
     if not users:
         return
 
+    live_ratings = await get_all_live_ratings()
     all_value = []
     for league_name, sport_key in list(LEAGUES.items())[:4]:
         games = await fetch_odds(sport_key)
         for game in games[:6]:
-            pred = predict_game(game, sport_key)
+            pred = predict_game(game, sport_key, live_ratings)
             if pred and pred["value_bets"]:
                 for vb in pred["value_bets"]:
                     if vb["ev"] >= 0.10:
