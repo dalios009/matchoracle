@@ -320,7 +320,10 @@ def predict_game(game, sport_key="default"):
     known_bonus = (3 if hr["atk"] != 1.0 else 0) + (3 if ar["atk"] != 1.0 else 0)
     conf = min(99, max(30, (max_p * 0.65 + top_scores[0][1] * 5 * 0.35) * 100 + known_bonus))
 
-    # Value bets (EV > 8%)
+    # Value bets — EV threshold lowered from 8% to 4% (still meaningful edge,
+    # but the old 8%+prob>25% combo was so strict it almost never fired).
+    # Also now checks BTTS and Over 2.5, not just match result, since the
+    # model already computes probabilities for those markets anyway.
     value_bets = []
     for label, p_val, odds_val in [
         ("Home Win", bh, h_odds),
@@ -328,11 +331,40 @@ def predict_game(game, sport_key="default"):
         ("Away Win", ba, a_odds)
     ]:
         ev = p_val * odds_val - 1
-        if ev > 0.08 and p_val > 0.25:
+        if ev > 0.04 and p_val > 0.15:
             value_bets.append({
                 "label": label, "odds": odds_val,
                 "ev": ev, "prob": p_val
             })
+
+    # BTTS value check — needs real market odds, derived from implied price
+    if btts_mkt:
+        btts_odds = 1 / btts_mkt
+        ev_btts = btts * btts_odds - 1
+        if ev_btts > 0.04 and btts > 0.15:
+            value_bets.append({
+                "label": "BTTS Yes", "odds": round(btts_odds, 2),
+                "ev": ev_btts, "prob": btts
+            })
+
+    # Over 2.5 value check
+    over25_mkt = None
+    for bm in bms:
+        for mkt in bm.get("markets", []):
+            if mkt["key"] != "totals":
+                continue
+            for oc in mkt.get("outcomes", []):
+                if oc["name"] == "Over" and oc.get("point") == 2.5:
+                    over25_mkt = oc["price"]
+    if over25_mkt:
+        ev_over = over25 * over25_mkt - 1
+        if ev_over > 0.04 and over25 > 0.15:
+            value_bets.append({
+                "label": "Over 2.5 Goals", "odds": over25_mkt,
+                "ev": ev_over, "prob": over25
+            })
+
+    value_bets.sort(key=lambda v: -v["ev"])
 
     # Result prediction
     if bh >= bd and bh >= ba:
@@ -516,7 +548,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "3️⃣ Expected goals from totals market\n"
         "4️⃣ Poisson model → full score matrix\n"
         "5️⃣ Blend: 60% market + 40% Poisson\n"
-        "6️⃣ Value bets: EV > 8% flagged\n"
+        "6️⃣ Value bets: EV > 4% flagged (Result, BTTS, O/U 2.5)\n"
         "7️⃣ Kelly Criterion: optimal stake sizing\n"
         "8️⃣ Self-learning: tracks prediction accuracy\n\n"
         "📊 *Tiers:*\n"
@@ -533,9 +565,9 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Scanning all leagues for value bets...")
 
     all_value = []
-    for league_name, sport_key in list(LEAGUES.items())[:6]:
+    for league_name, sport_key in list(LEAGUES.items()):
         games = await fetch_odds(sport_key)
-        for game in games[:8]:
+        for game in games[:15]:
             pred = predict_game(game, sport_key)
             if pred and pred["value_bets"]:
                 for vb in pred["value_bets"]:
