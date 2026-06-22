@@ -475,9 +475,14 @@ async function fetchSport(sport) {
   var c = cache.get(ck);
   if (c !== undefined) return c; // includes cached empty-array failures
 
+  // NOTE: 'btts' is rejected with a 422 INVALID_MARKET by every league
+  // tested on this account/plan — it's simply not offered, not a fluke.
+  // Request h2h+totals only; BTTS still works fine downstream because
+  // buildPrediction() already falls back to the pure Poisson-matrix BTTS
+  // estimate (matBtts) whenever consensusBtts() finds no btts market data.
   try {
     var r = await axios.get(BASE + '/sports/' + sport.key + '/odds', {
-      params: { apiKey: KEY, regions: 'eu,uk,us', markets: 'h2h,totals,btts', oddsFormat: 'decimal', dateFormat: 'iso' },
+      params: { apiKey: KEY, regions: 'eu,uk,us', markets: 'h2h,totals', oddsFormat: 'decimal', dateFormat: 'iso' },
       timeout: 10000,
     });
     var d = r.data || [];
@@ -487,6 +492,22 @@ async function fetchSport(sport) {
   } catch (e) {
     var status = e.response && e.response.status;
     var msg = e.response ? JSON.stringify(e.response.data) : e.message;
+    // If even h2h+totals is rejected (e.g. totals unsupported for this
+    // league), fall back to h2h alone before giving up entirely.
+    if (status === 422) {
+      try {
+        var r2 = await axios.get(BASE + '/sports/' + sport.key + '/odds', {
+          params: { apiKey: KEY, regions: 'eu,uk,us', markets: 'h2h', oddsFormat: 'decimal', dateFormat: 'iso' },
+          timeout: 10000,
+        });
+        var d2 = r2.data || [];
+        logger.info(sport.name + ' (h2h only): ' + d2.length + ' games');
+        cache.set(ck, d2, d2.length > 0 ? SUCCESS_CACHE_TTL : FAILURE_CACHE_TTL);
+        return d2;
+      } catch (e2) {
+        logger.error('OddsAPI ' + sport.key + ' h2h fallback failed: ' + (e2.response ? JSON.stringify(e2.response.data) : e2.message));
+      }
+    }
     logger.error('OddsAPI ' + sport.key + ' (' + status + '): ' + msg);
     // Cache the failure briefly so repeated requests during an outage or
     // quota exhaustion don't keep spending credits / retrying pointlessly.
