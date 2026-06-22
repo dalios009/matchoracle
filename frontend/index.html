@@ -310,7 +310,6 @@ const LEAGUES=[
   {key:'ll',label:'🇪🇸 La Liga'},{key:'cl',label:'⭐ UCL'},
   {key:'bl',label:'🇩🇪 Bundesliga'},{key:'sa',label:'🇮🇹 Serie A'},
   {key:'l1',label:'🇫🇷 Ligue 1'},{key:'ch',label:'🏴󠁧󠁢󠁥󠁮󠁧󠁿 Championship'},{key:'mls',label:'🇺🇸 MLS'},
-  {key:'wc', label:'🌍 World Cup 2026'},
 ];
 const QUICK_QS=['Best value bets today?','Top BTTS picks?','Safest home wins?','Best Over 2.5?','Biggest upsets today?'];
 
@@ -398,8 +397,11 @@ async function loadFixtures(){
     state.fixturesError=err.message;
     state.fixtures=demoFixtures();
   }finally{
-    state.fixturesLoading=false;renderMatchList();
+    // Attach predictions BEFORE the final render so the first paint already
+    // has real scores/probabilities instead of "?–?" / "Loading…" — this was
+    // the root cause of predictions only appearing after switching dates twice.
     state.fixtures.forEach(f=>{if(f.oddsData&&!state.predictions[f.id])attachOdds(f);});
+    state.fixturesLoading=false;renderMatchList();
   }
 }
 
@@ -547,6 +549,14 @@ function toggleCard(id){
       card.classList.add('expanded');
       const f=state.fixtures.find(x=>String(x.id)===String(id));
       if(f&&!state.predictions[id])attachOdds(f);
+      // Re-render the expand panel's inner content now that a prediction is
+      // attached — without this, the panel was permanently stuck showing
+      // "Loading…" because the HTML was already painted before attachOdds ran.
+      const ep=document.getElementById(`ep-${id}`);
+      if(ep&&f){
+        const pred=state.predictions[id];
+        ep.innerHTML=pred?expandPanel(f,pred):`<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Prediction unavailable for this match.</div>`;
+      }
       setTimeout(()=>card.scrollIntoView({behavior:'smooth',block:'nearest'}),60);
     }
   }
