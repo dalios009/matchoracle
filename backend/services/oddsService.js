@@ -441,10 +441,47 @@ function buildPrediction(match, sport) {
 }
 
 // ── FETCH LAYER ────────────────────────────────────────────────
+// Negative-result cache: when the Odds API quota is exhausted or we're
+// being rate-limited, remember that failure for a short window so a burst
+// of near-simultaneous requests (multiple date taps, page reloads, bot +
+// mini-app hitting the same minute) doesn't multiply the damage by retrying
+// the same dead request 9 times per call. Without this, one quota error
+// turned into dozens of wasted calls within seconds, as seen in production.
+var QUOTA_DEAD_UNTIL = { _global: 0 }; // per-sport-key timestamp, plus a global kill switch
+
+function isQuotaDead(sportKey) {
+  var now = Date.now();
+  if (QUOTA_DEAD_UNTIL._global > now) return true;
+  return (QUOTA_DEAD_UNTIL[sportKey] || 0) > now;
+}
+
+function markQuotaDead(sportKey, errorCode) {
+  var now = Date.now();
+  // OUT_OF_USAGE_CREDITS means the whole key is dead until quota resets —
+  // back off hard and globally so we don't burn remaining frequency budget
+  // hammering other sport keys in the same burst.
+  if (errorCode === 'OUT_OF_USAGE_CREDITS') {
+    QUOTA_DEAD_UNTIL._global = now + 5 * 60 * 1000; // 5 min global cooldown
+    logger.warn('OddsAPI quota exhausted — pausing ALL requests for 5 minutes');
+  } else if (errorCode === 'EXCEEDED_FREQ_LIMIT') {
+    QUOTA_DEAD_UNTIL[sportKey] = now + 30 * 1000; // 30s cooldown for this sport only
+  } else {
+    QUOTA_DEAD_UNTIL[sportKey] = now + 30 * 1000;
+  }
+}
+
 async function fetchSport(sport) {
   var ck = 'odds:' + sport.key;
   var c = cache.get(ck);
   if (c) return c;
+
+  // Short-circuit immediately if we already know the API is dead — this is
+  // what stops a burst of 5 calls from becoming 45 wasted requests.
+  if (isQuotaDead(sport.key)) {
+    logger.warn('Skipping ' + sport.key + ' — in cooldown after recent quota/rate error');
+    return [];
+  }
+
   for (var i = 0; i < 3; i++) {
     var markets = ['h2h,totals,btts', 'h2h,totals', 'h2h'][i];
     try {
@@ -454,12 +491,18 @@ async function fetchSport(sport) {
       });
       var d = r.data || [];
       logger.info(sport.name + ' (' + markets + '): ' + d.length + ' games');
-      if (d.length > 0) { cache.set(ck, d, 600); return d; }
+      // Cache successful results, including empty arrays — an empty result
+      // for a sport with no games today is valid and shouldn't be re-fetched
+      // every time either.
+      cache.set(ck, d, d.length > 0 ? 600 : 120);
       return d;
     } catch (e) {
       if (e.response && e.response.status === 422) { continue; }
-      var msg = e.response ? JSON.stringify(e.response.data) : e.message;
+      var errBody = e.response ? e.response.data : null;
+      var errorCode = errBody && errBody.error_code;
+      var msg = errBody ? JSON.stringify(errBody) : e.message;
       logger.error('OddsAPI ' + sport.key + ': ' + msg);
+      markQuotaDead(sport.key, errorCode);
       return [];
     }
   }
