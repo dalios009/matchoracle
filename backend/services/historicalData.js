@@ -27,6 +27,7 @@
 const axios = require('axios');
 const NodeCache = require('node-cache');
 const logger = require('../utils/logger');
+const { normalizeTeamName } = require('./teamRatings');
 
 const FD_BASE = 'https://api.football-data.org/v4';
 const FD_KEY = process.env.FOOTBALL_DATA_KEY;
@@ -205,15 +206,14 @@ async function getAllLiveRatings() {
  * Returns { homeScore, awayScore, homeTeam, awayTeam } or null if not found.
  */
 async function findFinishedMatch(homeTeamName, awayTeamName) {
-  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
-  const hn = norm(homeTeamName), an = norm(awayTeamName);
+  const hn = normalizeTeamName(homeTeamName), an = normalizeTeamName(awayTeamName);
 
   await getAllLiveRatings(); // ensures fd:allMatches is populated
   const matches = cache.get('fd:allMatches') || [];
 
   const found = matches.find(function (m) {
-    const gh = norm(m.homeTeam && m.homeTeam.name);
-    const ga = norm(m.awayTeam && m.awayTeam.name);
+    const gh = normalizeTeamName(m.homeTeam && m.homeTeam.name);
+    const ga = normalizeTeamName(m.awayTeam && m.awayTeam.name);
     const teamsMatch = (gh.includes(hn) || hn.includes(gh)) && (ga.includes(an) || an.includes(ga));
     return teamsMatch && m.score && m.score.fullTime && m.score.fullTime.home != null;
   });
