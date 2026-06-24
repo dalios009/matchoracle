@@ -174,4 +174,35 @@ function getLeagueBaseline(sportKey) {
   return LEAGUE_BASELINES[sportKey] || LEAGUE_BASELINES.default;
 }
 
-module.exports = { getTeamRating, getLeagueBaseline, TEAM_RATINGS, LEAGUE_BASELINES };
+// ── CROSS-SOURCE NAME ALIASES ─────────────────────────────────────────────
+// The Odds API, football-data.org, and FIFA's own branding don't always
+// agree on team names — not just accents (which a simple normalize handles)
+// but genuinely different spellings/conventions. These are real mismatches
+// found in production, not hypothetical: "Türkiye" (FIFA's official name,
+// used by football-data.org) vs "Turkey" (used by The Odds API) is the
+// most common one. Without this table, matches involving these teams can
+// never be found across sources — a substring check can't fix a different
+// word entirely.
+var NAME_ALIASES = {
+  'turkiye': 'turkey',
+  'koreasouth': 'southkorea',
+  'koreadprepublic': 'northkorea',
+  'usa': 'unitedstates',
+  'ivorycoast': 'cotedivoire',
+  'czechia': 'czechrepublic',
+};
+
+/**
+ * Normalize a team name for cross-source matching: strip accents, lowercase,
+ * remove non-letters, then apply known aliases so "Türkiye" and "Turkey"
+ * (or "Ivory Coast" and "Côte d'Ivoire") resolve to the same canonical form.
+ */
+function normalizeTeamName(s) {
+  var base = (s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents
+    .toLowerCase()
+    .replace(/[^a-z]/g, ''); // letters only
+  return NAME_ALIASES[base] || base;
+}
+
+module.exports = { getTeamRating, getLeagueBaseline, normalizeTeamName, TEAM_RATINGS, LEAGUE_BASELINES };
