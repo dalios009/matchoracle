@@ -605,7 +605,118 @@ async function findOddsForFixture(h, a) {
   return m ? m.oddsData : null;
 }
 
+// ── MATCH RESULT LOOKUP (for bet settlement) ──────────────────────────────
+// Used by /api/matches/settle to check whether a logged bet won or lost.
+// The Odds API's /scores endpoint returns completed games with final
+// scores, keyed by the same team names we already show in the UI — no
+// extra ID-matching needed against a different data source.
+var scoresCache = new NodeCache({ stdTTL: 900 }); // 15 min — scores don't need to be instant
+
+async function fetchScoresForSport(sportKey) {
+  var ck = 'scores:' + sportKey;
+  var c = scoresCache.get(ck);
+  if (c !== undefined) return c;
+  try {
+    var r = await axios.get(BASE + '/sports/' + sportKey + '/scores', {
+      params: { apiKey: KEY, daysFrom: 3 },
+      timeout: 10000,
+    });
+    var d = r.data || [];
+    scoresCache.set(ck, d, 900);
+    return d;
+  } catch (e) {
+    logger.error('OddsAPI scores ' + sportKey + ': ' + (e.response ? JSON.stringify(e.response.data) : e.message));
+    scoresCache.set(ck, [], 300);
+    return [];
+  }
+}
+
+/**
+ * Find the final score for a match by team names, searching all sports.
+ * Returns { completed, homeScore, awayScore, homeTeam, awayTeam } or null
+ * if the match isn't found / hasn't finished yet.
+ */
+async function getMatchResult(homeTeamName, awayTeamName) {
+  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
+  var hn = norm(homeTeamName), an = norm(awayTeamName);
+
+  var allResults = await Promise.allSettled(
+    SPORTS.map(function (s) { return fetchScoresForSport(s.key); })
+  );
+
+  for (var i = 0; i < allResults.length; i++) {
+    if (allResults[i].status !== 'fulfilled') continue;
+    var games = allResults[i].value || [];
+    for (var j = 0; j < games.length; j++) {
+      var g = games[j];
+      var gh = norm(g.home_team), ga = norm(g.away_team);
+      var matches = (gh.includes(hn) || hn.includes(gh)) && (ga.includes(an) || an.includes(ga));
+      if (!matches) continue;
+      if (!g.completed || !g.scores) {
+        return { completed: false, homeScore: null, awayScore: null, homeTeam: g.home_team, awayTeam: g.away_team };
+      }
+      var homeScoreEntry = g.scores.find(function (s) { return norm(s.name) === gh; });
+      var awayScoreEntry = g.scores.find(function (s) { return norm(s.name) === ga; });
+      return {
+        completed: true,
+        homeScore: homeScoreEntry ? parseInt(homeScoreEntry.score, 10) : null,
+        awayScore: awayScoreEntry ? parseInt(awayScoreEntry.score, 10) : null,
+        homeTeam: g.home_team,
+        awayTeam: g.away_team,
+      };
+    }
+  }
+  return null; // not found in any sport — too old, or not tracked
+}
+
+/**
+ * Determine win/loss for a specific bet pick given the final score.
+ * Supports the market types this app actually logs: match result (Win),
+ * handicap (e.g. "Team -0.5"), Over/Under goals, BTTS.
+ */
+function settleBetPick(market, value, homeTeam, awayTeam, homeScore, awayScore) {
+  var v = (value || '').toLowerCase();
+  var totalGoals = homeScore + awayScore;
+
+  if (v.includes('win') || v === 'draw') {
+    var actualResult = homeScore > awayScore ? 'home' : (awayScore > homeScore ? 'away' : 'draw');
+    if (v === 'draw') return actualResult === 'draw';
+    if (v.includes(homeTeam.toLowerCase())) return actualResult === 'home';
+    if (v.includes(awayTeam.toLowerCase())) return actualResult === 'away';
+    return null; // couldn't determine which side this pick refers to
+  }
+
+  if (v.includes('-0.5') || v.includes('+0.5')) {
+    // Asian handicap -0.5 = team must win outright; +0.5 = team must not lose
+    var isHome = v.includes(homeTeam.toLowerCase());
+    var teamScore = isHome ? homeScore : awayScore;
+    var oppScore = isHome ? awayScore : homeScore;
+    if (v.includes('-0.5')) return teamScore > oppScore;
+    if (v.includes('+0.5')) return teamScore >= oppScore;
+  }
+
+  if (v.includes('over')) {
+    var lineMatch = v.match(/over\s*([\d.]+)/);
+    var line = lineMatch ? parseFloat(lineMatch[1]) : 2.5;
+    return totalGoals > line;
+  }
+  if (v.includes('under')) {
+    var lineMatch2 = v.match(/under\s*([\d.]+)/);
+    var line2 = lineMatch2 ? parseFloat(lineMatch2[1]) : 2.5;
+    return totalGoals < line2;
+  }
+
+  if (v.includes('btts')) {
+    var bttsYes = homeScore > 0 && awayScore > 0;
+    return v.includes('no') ? !bttsYes : bttsYes;
+  }
+
+  return null; // unrecognized market shape — leave as pending rather than guess
+}
+
 module.exports = {
   getFixturesByDateFromOdds: getFixturesByDateFromOdds,
   findOddsForFixture: findOddsForFixture,
+  getMatchResult: getMatchResult,
+  settleBetPick: settleBetPick,
 };
