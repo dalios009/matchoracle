@@ -5,7 +5,7 @@
 const axios = require('axios');
 const NodeCache = require('node-cache');
 const logger = require('../utils/logger');
-const { getTeamRating, getLeagueBaseline } = require('./teamRatings');
+const { getTeamRating, getLeagueBaseline, normalizeTeamName } = require('./teamRatings');
 const { getAllLiveRatings, getAllCrests, findFinishedMatch } = require('./historicalData');
 
 const cache = new NodeCache({ stdTTL: 600 });
@@ -596,7 +596,7 @@ async function getFixturesByDateFromOdds(dateStr) {
 async function findOddsForFixture(h, a) {
   var today = new Date().toISOString().split('T')[0];
   var fixtures = await getFixturesByDateFromOdds(today);
-  var n = function (s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); };
+  var n = normalizeTeamName;
   var hn = n(h), an = n(a);
   var m = fixtures.find(function (f) {
     return (n(f.home.name).includes(hn) || hn.includes(n(f.home.name))) &&
@@ -646,8 +646,7 @@ async function fetchScoresForSport(sportKey) {
  * if the match isn't found in either source / hasn't finished yet.
  */
 async function getMatchResult(homeTeamName, awayTeamName) {
-  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
-  var hn = norm(homeTeamName), an = norm(awayTeamName);
+  var hn = normalizeTeamName(homeTeamName), an = normalizeTeamName(awayTeamName);
 
   var allResults = await Promise.allSettled(
     SPORTS.map(function (s) { return fetchScoresForSport(s.key); })
@@ -658,14 +657,14 @@ async function getMatchResult(homeTeamName, awayTeamName) {
     var games = allResults[i].value || [];
     for (var j = 0; j < games.length; j++) {
       var g = games[j];
-      var gh = norm(g.home_team), ga = norm(g.away_team);
+      var gh = normalizeTeamName(g.home_team), ga = normalizeTeamName(g.away_team);
       var matches = (gh.includes(hn) || hn.includes(gh)) && (ga.includes(an) || an.includes(ga));
       if (!matches) continue;
       if (!g.completed || !g.scores) {
         return { completed: false, homeScore: null, awayScore: null, homeTeam: g.home_team, awayTeam: g.away_team };
       }
-      var homeScoreEntry = g.scores.find(function (s) { return norm(s.name) === gh; });
-      var awayScoreEntry = g.scores.find(function (s) { return norm(s.name) === ga; });
+      var homeScoreEntry = g.scores.find(function (s) { return normalizeTeamName(s.name) === gh; });
+      var awayScoreEntry = g.scores.find(function (s) { return normalizeTeamName(s.name) === ga; });
       return {
         completed: true,
         homeScore: homeScoreEntry ? parseInt(homeScoreEntry.score, 10) : null,
@@ -704,9 +703,22 @@ async function getMatchResult(homeTeamName, awayTeamName) {
 function settleBetPick(market, value, homeTeam, awayTeam, homeScore, awayScore) {
   var v = (value || '').toLowerCase();
   var totalGoals = homeScore + awayScore;
+  var actualResult = homeScore > awayScore ? 'home' : (awayScore > homeScore ? 'away' : 'draw');
+
+  // Double Chance ("Team or Draw") — e.g. "Germany or Draw", "Turkey or Draw".
+  // This must be checked BEFORE the plain win/draw check below, since
+  // "germany or draw" doesn't contain "win" and isn't exactly "draw", so it
+  // would otherwise fall through every branch and stay stuck on "pending"
+  // forever even after the match has a final score.
+  if (v.includes(' or draw') || v.includes(' or ')) {
+    var sideWins = v.includes(homeTeam.toLowerCase()) ? actualResult === 'home'
+                  : v.includes(awayTeam.toLowerCase()) ? actualResult === 'away'
+                  : null;
+    if (sideWins === null) return null; // couldn't identify the named team
+    return sideWins || actualResult === 'draw';
+  }
 
   if (v.includes('win') || v === 'draw') {
-    var actualResult = homeScore > awayScore ? 'home' : (awayScore > homeScore ? 'away' : 'draw');
     if (v === 'draw') return actualResult === 'draw';
     if (v.includes(homeTeam.toLowerCase())) return actualResult === 'home';
     if (v.includes(awayTeam.toLowerCase())) return actualResult === 'away';
