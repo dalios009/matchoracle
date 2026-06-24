@@ -695,51 +695,92 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     upsert_user(u.id, u.username, u.first_name)
     await update.message.reply_text("🔍 Scanning all leagues for value bets...")
 
+    # Only consider matches kicking off within the next 7 days. The Odds
+    # API sometimes returns fixtures months out (e.g. next season's opening
+    # matchday) mixed in with this week's games — without this filter,
+    # "today's" value bets could include matches 2 months away.
+    now = datetime.now(timezone.utc)
+    window_end = now + timedelta(days=7)
+
     live_ratings = await get_all_live_ratings()
-    all_value = []
+    by_match = {}  # game_id -> best value bet seen for that match (one entry per match, not one per market)
+
     for league_name, sport_key in list(LEAGUES.items()):
         games = await fetch_odds(sport_key)
         for game in games[:15]:
+            kick_str = game.get("commence_time")
+            try:
+                kick_dt = datetime.fromisoformat(kick_str.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            # Skip anything already kicked off or more than 7 days away —
+            # this is what filters out the "Sat 22 Aug" next-season fixtures
+            # and anything that's already finished.
+            if kick_dt < now or kick_dt > window_end:
+                continue
+
             pred = predict_game(game, sport_key, live_ratings)
-            if pred and pred["value_bets"]:
-                for vb in pred["value_bets"]:
-                    all_value.append({
-                        "league": league_name,
-                        "home": pred["home"],
-                        "away": pred["away"],
-                        "kick": pred["commence_time"],
-                        "pick": vb["label"],
-                        "odds": vb["odds"],
-                        "ev": vb["ev"],
-                        "prob": vb["prob"],
-                        "conf": pred["confidence"],
-                        "game_id": pred["game_id"],
-                        "sport_key": sport_key,
-                    })
+            if not pred or not pred["value_bets"]:
+                continue
+
+            # A single match can clear the EV threshold on more than one
+            # market (e.g. Home Win AND Over 2.5 both look like "value").
+            # Showing both to the user is confusing and can even show
+            # contradictory picks (Home Win + Away Win) for the same game.
+            # Keep only the single highest-EV pick per match.
+            best_vb = max(pred["value_bets"], key=lambda v: v["ev"])
+            game_id = pred["game_id"]
+            candidate = {
+                "league": league_name,
+                "home": pred["home"],
+                "away": pred["away"],
+                "kick": kick_str,
+                "kick_dt": kick_dt,
+                "pick": best_vb["label"],
+                "odds": best_vb["odds"],
+                "ev": best_vb["ev"],
+                "prob": best_vb["prob"],
+                "conf": pred["confidence"],
+                "game_id": game_id,
+                "sport_key": sport_key,
+            }
+            existing = by_match.get(game_id)
+            if not existing or candidate["ev"] > existing["ev"]:
+                by_match[game_id] = candidate
+
+    all_value = list(by_match.values())
 
     if not all_value:
         await update.message.reply_text(
-            "😔 No value bets found right now.\nCheck back closer to match time!"
+            "😔 No value bets found in the next 7 days.\nCheck back closer to match time!"
         )
         return
 
     all_value.sort(key=lambda x: -x["ev"])
     top = all_value[:8]
 
-    lines = [sep(), "💎 *TOP VALUE BETS TODAY*", sep(), ""]
+    def time_until(kick_dt):
+        delta = kick_dt - now
+        hours = delta.total_seconds() / 3600
+        if hours < 24:
+            return f"in {hours:.0f}h"
+        return f"in {hours / 24:.0f}d"
+
+    lines = [sep(), "💎 *TOP VALUE BETS — NEXT 7 DAYS*", sep(), ""]
     for i, vb in enumerate(top, 1):
         lines += [
             f"*{i}. {vb['home']} vs {vb['away']}*",
-            f"   {vb['league']}  ·  {fmt_kick(vb['kick'])}",
+            f"   {vb['league']}  ·  {fmt_kick(vb['kick'])}  ({time_until(vb['kick_dt'])})",
             f"   Pick: *{vb['pick']}* @ {vb['odds']:.2f}  (model: {vb['prob'] * 100:.0f}% chance)",
             f"   Edge vs market: +{vb['ev'] * 100:.0f}%",
             f"   Match favourite confidence: {vb['conf']:.0f}%  {conf_emoji(vb['conf'])}",
             "",
         ]
     lines.append(
-        "ℹ️ \"Match favourite confidence\" rates the model's certainty about "
-        "the overall match outcome — it is NOT the probability of the pick "
-        "shown above. Always check the pick's own % before betting.\n"
+        "ℹ️ One pick shown per match (the highest-edge market) to avoid "
+        "contradictory picks. \"Match favourite confidence\" rates the "
+        "model's certainty about the overall match outcome — it is NOT "
+        "the probability of the pick shown above.\n"
     )
     lines.append("⚠️ Educational only. Bet responsibly.")
 
@@ -939,7 +980,11 @@ async def cb_league(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for i, p in enumerate(preds[:8]):
         icon = "💎" if p["value_bets"] else conf_emoji(p["confidence"])
-        label = f"{icon} {p['home'][:13]} vs {p['away'][:13]}  {p['confidence']:.0f}%"
+        try:
+            kdate = datetime.fromisoformat(p["commence_time"].replace("Z", "+00:00")).strftime("%d %b")
+        except Exception:
+            kdate = ""
+        label = f"{icon} {kdate} {p['home'][:11]} vs {p['away'][:11]}  {p['confidence']:.0f}%"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"game:{sport_key}:{i}")])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back:leagues")])
 
@@ -1229,24 +1274,45 @@ async def send_value_alerts(ctx: ContextTypes.DEFAULT_TYPE):
     if not users:
         return
 
+    now = datetime.now(timezone.utc)
+    window_end = now + timedelta(days=3)  # alerts are time-sensitive — keep tighter than /top's 7-day window
+
     live_ratings = await get_all_live_ratings()
-    all_value = []
+    by_match = {}  # game_id -> best (highest-EV) pick for that match only
+
     for league_name, sport_key in list(LEAGUES.items())[:4]:
         games = await fetch_odds(sport_key)
         for game in games[:6]:
+            kick_str = game.get("commence_time")
+            try:
+                kick_dt = datetime.fromisoformat(kick_str.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if kick_dt < now or kick_dt > window_end:
+                continue
+
             pred = predict_game(game, sport_key, live_ratings)
-            if pred and pred["value_bets"]:
-                for vb in pred["value_bets"]:
-                    if vb["ev"] >= 0.10:
-                        all_value.append({
-                            "league": league_name,
-                            "home": pred["home"], "away": pred["away"],
-                            "kick": pred["commence_time"],
-                            "pick": vb["label"], "odds": vb["odds"],
-                            "ev": vb["ev"], "prob": vb["prob"],
-                            "conf": pred["confidence"],
-                            "game_id": pred["game_id"],
-                        })
+            if not pred or not pred["value_bets"]:
+                continue
+            best_vb = max(pred["value_bets"], key=lambda v: v["ev"])
+            if best_vb["ev"] < 0.10:
+                continue
+            game_id = pred["game_id"]
+            candidate = {
+                "league": league_name,
+                "home": pred["home"], "away": pred["away"],
+                "kick": kick_str,
+                "pick": best_vb["label"], "odds": best_vb["odds"],
+                "ev": best_vb["ev"], "prob": best_vb["prob"],
+                "conf": pred["confidence"],
+                "game_id": game_id,
+            }
+            existing = by_match.get(game_id)
+            if not existing or candidate["ev"] > existing["ev"]:
+                by_match[game_id] = candidate
+
+    all_value = list(by_match.values())
+    all_value.sort(key=lambda x: -x["ev"])
 
     if not all_value:
         return
