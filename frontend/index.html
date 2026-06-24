@@ -482,7 +482,19 @@ function expandPanel(fixture,pred){
   const chips=(pred.bestBets||[]).slice(0,6).map((b,bi)=>{
     const k=`${fixture.id}-${bi}`;const sel=!!state.selectedBets[k];
     const isVal=Array.isArray(pred.valueBets)&&pred.valueBets.some(v=>(v.label||v).toString().includes(b.value));
-    return `<div class="bet-chip${sel?' selected':''}${isVal?' value-bet':''}" onclick="toggleBet(event,'${k}','${fixture.id}','${esc(b.market)}','${esc(b.value)}',${b.prob})">
+    // Only Match Result picks map cleanly to a stored bookmaker price right
+    // now (home/draw/away). Other markets (totals, BTTS, handicap) don't
+    // have a per-pick consensus price stored on the fixture, so we leave
+    // odds unset for those rather than guess — the bet still settles
+    // correctly by final score, it just won't compute a $ profit figure.
+    let chipOdds=null;
+    if(b.market==='Match Result'){
+      const bo=pred.bookmakerOdds||{};
+      if(b.value===fixture.home.name+' Win'||b.value.includes('Win')&&b.value.includes(fixture.home.name))chipOdds=bo.home;
+      else if(b.value==='Draw')chipOdds=bo.draw;
+      else if(b.value===fixture.away.name+' Win'||b.value.includes('Win')&&b.value.includes(fixture.away.name))chipOdds=bo.away;
+    }
+    return `<div class="bet-chip${sel?' selected':''}${isVal?' value-bet':''}" onclick="toggleBet(event,'${k}','${fixture.id}','${esc(b.market)}','${esc(b.value)}',${b.prob},${chipOdds||'null'})">
       <div class="bet-market">${b.market}</div><div class="bet-value">${b.value}</div>
       <div class="bet-bar-row"><div class="bet-bar-wrap"><div class="bet-bar-fill ${probCls(b.prob)}" style="width:${b.prob}%"></div></div>
       <div class="bet-pct" style="color:${tierColor(b.prob)}">${b.prob}%</div></div></div>`;
@@ -563,13 +575,13 @@ function toggleCard(id){
   }
 }
 
-function toggleBet(e,key,fid,market,value,prob){
+function toggleBet(e,key,fid,market,value,prob,odds){
   e.stopPropagation();haptic.impact('medium');
   if(state.selectedBets[key]){
     delete state.selectedBets[key];e.currentTarget.classList.remove('selected');toast('❌ Removed');
   }else{
     const f=state.fixtures.find(x=>String(x.id)===String(fid));
-    state.selectedBets[key]={key,fixtureId:fid,match:f?`${f.home.name} vs ${f.away.name}`:'Match',market,value,prob};
+    state.selectedBets[key]={key,fixtureId:fid,match:f?`${f.home.name} vs ${f.away.name}`:'Match',market,value,prob,odds:odds||null};
     e.currentTarget.classList.add('selected');toast('✅ Added to betslip');
   }
   const c=Object.keys(state.selectedBets).length;
@@ -584,7 +596,7 @@ function saveBetslip(){
   localStorage.setItem('mo_slips',JSON.stringify(state.savedBetslips));
   // Also add to bet log
   bets.forEach(b=>{
-    state.betLog.unshift({id:Date.now()+Math.random(),match:b.match,market:b.market,value:b.value,prob:b.prob,odds:null,stake:0,status:'pending',profit:0,date:new Date().toLocaleString('en-GB')});
+    state.betLog.unshift({id:Date.now()+Math.random(),match:b.match,market:b.market,value:b.value,prob:b.prob,odds:b.odds||null,stake:0,status:'pending',profit:0,date:new Date().toLocaleString('en-GB')});
   });
   localStorage.setItem('mo_betlog',JSON.stringify(state.betLog));
   state.selectedBets={};
@@ -650,6 +662,39 @@ function renderTop(){
 }
 
 // TRACKER
+async function settlePendingBets(){
+  const pending=state.betLog.filter(b=>b.status==='pending'||!b.status);
+  if(!pending.length)return;
+  try{
+    const resp=await fetch(`${API_BASE}/matches/settle`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({bets:pending.map(b=>({id:b.id,match:b.match,market:b.market,value:b.value}))})
+    });
+    if(!resp.ok)return;
+    const {results}=await resp.json();
+    let changed=false;
+    results.forEach(r=>{
+      if(r.status==='won'||r.status==='lost'){
+        const bet=state.betLog.find(b=>b.id===r.id);
+        if(bet&&bet.status!==r.status){
+          bet.status=r.status;
+          bet.finalScore=r.finalScore||null;
+          if(r.status==='won'&&bet.stake&&bet.odds)bet.profit=+(bet.stake*(bet.odds-1)).toFixed(2);
+          else if(r.status==='lost'&&bet.stake)bet.profit=-bet.stake;
+          changed=true;
+        }
+      }
+    });
+    if(changed){
+      localStorage.setItem('mo_betlog',JSON.stringify(state.betLog));
+      renderTracker();
+    }
+  }catch(e){
+    console.error('Bet settlement check failed:',e);
+  }
+}
+
 function renderTracker(){
   const log=state.betLog;
   const won=log.filter(b=>b.status==='won').length;
@@ -676,7 +721,7 @@ function renderTracker(){
       <div class="bet-item-match">${b.match||'Match'}</div>
       <div class="bet-status ${b.status==='won'?'s-won':b.status==='lost'?'s-lost':'s-pending'}">${b.status==='won'?'✅ Won':b.status==='lost'?'❌ Lost':'⏳ Pending'}</div>
     </div>
-    <div class="bet-meta">${b.value||b.market} ${b.odds?'@ '+b.odds:''} ${b.stake?'· $'+b.stake:''}</div>
+    <div class="bet-meta">${b.value||b.market} ${b.odds?'@ '+b.odds:''} ${b.stake?'· $'+b.stake:''} ${b.finalScore?'· FT '+b.finalScore:''}</div>
   </div>`).join('');
 }
 
@@ -704,7 +749,7 @@ function navigate(page){
   document.getElementById(`page-${page}`).classList.add('active');
   document.getElementById(`nav-${page}`).classList.add('active');
   if(page==='top')renderTop();
-  if(page==='tracker')renderTracker();
+  if(page==='tracker'){renderTracker();settlePendingBets();}
 }
 
 function demoFixtures(){
