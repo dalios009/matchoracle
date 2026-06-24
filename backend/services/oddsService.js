@@ -6,7 +6,7 @@ const axios = require('axios');
 const NodeCache = require('node-cache');
 const logger = require('../utils/logger');
 const { getTeamRating, getLeagueBaseline } = require('./teamRatings');
-const { getAllLiveRatings, getAllCrests } = require('./historicalData');
+const { getAllLiveRatings, getAllCrests, findFinishedMatch } = require('./historicalData');
 
 const cache = new NodeCache({ stdTTL: 600 });
 const KEY = process.env.ODDS_API_KEY;
@@ -632,9 +632,18 @@ async function fetchScoresForSport(sportKey) {
 }
 
 /**
- * Find the final score for a match by team names, searching all sports.
+ * Find the final score for a match by team names.
+ *
+ * Tries The Odds API's /scores first (fast, fresh, but capped at a 3-day
+ * lookback — the API's hard maximum, not something we can configure
+ * around). For anything not found there — almost always because the
+ * match finished more than 3 days ago — falls back to football-data.org
+ * via historicalData.js, which covers a ~100-day window. This combination
+ * means a bet logged on a match doesn't silently stay "pending" forever
+ * just because the user checks back after a few days.
+ *
  * Returns { completed, homeScore, awayScore, homeTeam, awayTeam } or null
- * if the match isn't found / hasn't finished yet.
+ * if the match isn't found in either source / hasn't finished yet.
  */
 async function getMatchResult(homeTeamName, awayTeamName) {
   function norm(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
@@ -666,7 +675,25 @@ async function getMatchResult(homeTeamName, awayTeamName) {
       };
     }
   }
-  return null; // not found in any sport — too old, or not tracked
+
+  // Not found in The Odds API's 3-day window — try football-data.org's
+  // longer ~100-day window before giving up.
+  try {
+    var fdResult = await findFinishedMatch(homeTeamName, awayTeamName);
+    if (fdResult) {
+      return {
+        completed: true,
+        homeScore: fdResult.homeScore,
+        awayScore: fdResult.awayScore,
+        homeTeam: fdResult.homeTeam,
+        awayTeam: fdResult.awayTeam,
+      };
+    }
+  } catch (e) {
+    logger.error('football-data.org settlement fallback failed: ' + e.message);
+  }
+
+  return null; // not found in either source — too old for both, or not tracked
 }
 
 /**
