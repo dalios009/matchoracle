@@ -508,8 +508,18 @@ function buildPrediction(match, sport, liveRatings, crests) {
 
 // ── FETCH LAYER ────────────────────────────────────────────────
 // Credit-saving notes:
+// - COST FORMULA (confirmed from official docs): cost = markets x regions,
+//   per call. The previous regions:'eu,uk,us' (3 regions) x markets:'h2h,totals'
+//   (2 markets) = 6 credits PER LEAGUE PER REFRESH. With 11 leagues on a
+//   30-min cache, that's up to 66 credits every half hour during active
+//   periods — easily exhausting a 500/month free plan in under 2 days,
+//   which is exactly what happened. Dropped to ONE region ('eu') — still
+//   gives broad, representative European bookmaker coverage for the
+//   consensus-odds calculation — cutting cost to 2 credits/league/refresh
+//   (a 3x reduction) with no loss of prediction quality, since the engine
+//   already averages across many bookmakers rather than needing every region.
 // - Cache TTL raised from 10 min to 30 min — odds don't need to refresh
-//   that often, and this single change cuts API calls by ~3x.
+//   that often, and this single change cuts API calls by ~3x on its own.
 // - Only ONE request per sport per cache window now (was up to 3, trying
 //   different market combos). We request all markets in one shot and just
 //   accept whatever subset the API actually returns instead of retrying.
@@ -518,6 +528,7 @@ function buildPrediction(match, sport, liveRatings, crests) {
 //   single page load until the cache naturally expires.
 var FAILURE_CACHE_TTL = 120; // seconds — short, so real recoveries aren't blocked long
 var SUCCESS_CACHE_TTL = 1800; // 30 minutes
+var ODDS_REGIONS = 'eu'; // single region — see cost-formula note above
 
 async function fetchSport(sport) {
   var ck = 'odds:' + sport.key;
@@ -531,7 +542,7 @@ async function fetchSport(sport) {
   // estimate (matBtts) whenever consensusBtts() finds no btts market data.
   try {
     var r = await axios.get(BASE + '/sports/' + sport.key + '/odds', {
-      params: { apiKey: KEY, regions: 'eu,uk,us', markets: 'h2h,totals', oddsFormat: 'decimal', dateFormat: 'iso' },
+      params: { apiKey: KEY, regions: ODDS_REGIONS, markets: 'h2h,totals', oddsFormat: 'decimal', dateFormat: 'iso' },
       timeout: 10000,
     });
     var d = r.data || [];
@@ -546,7 +557,7 @@ async function fetchSport(sport) {
     if (status === 422) {
       try {
         var r2 = await axios.get(BASE + '/sports/' + sport.key + '/odds', {
-          params: { apiKey: KEY, regions: 'eu,uk,us', markets: 'h2h', oddsFormat: 'decimal', dateFormat: 'iso' },
+          params: { apiKey: KEY, regions: ODDS_REGIONS, markets: 'h2h', oddsFormat: 'decimal', dateFormat: 'iso' },
           timeout: 10000,
         });
         var d2 = r2.data || [];
@@ -610,7 +621,16 @@ async function findOddsForFixture(h, a) {
 // The Odds API's /scores endpoint returns completed games with final
 // scores, keyed by the same team names we already show in the UI — no
 // extra ID-matching needed against a different data source.
-var scoresCache = new NodeCache({ stdTTL: 900 }); // 15 min — scores don't need to be instant
+//
+// COST NOTE: per official docs, /scores with daysFrom specified costs 2
+// credits per call. Settlement checks one call per sport (11 sports), so
+// every full settlement pass costs up to 22 credits. The previous 15-min
+// cache meant this could fire ~96 times/day if the Tracker page is opened
+// repeatedly — over 2,000 credits/day in the worst case, which is almost
+// certainly the dominant cause of the quota exhaustion in under 2 days.
+// A finished match's score never changes, so there's no reason to refresh
+// this aggressively — bumped to 6 hours.
+var scoresCache = new NodeCache({ stdTTL: 21600 }); // 6 hours
 
 async function fetchScoresForSport(sportKey) {
   var ck = 'scores:' + sportKey;
