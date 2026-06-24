@@ -179,18 +179,52 @@ async function getAllLiveRatings() {
 
   let merged = {};
   let crests = {};
+  let allMatches = [];
   results.forEach(function (r) {
     if (r.status !== 'fulfilled') return;
     const ratings = computeRatingsFromMatches(r.value);
     merged = Object.assign(merged, ratings);
     crests = Object.assign({}, collectCrestsFromMatches(r.value), crests); // first-seen wins, club crest preferred
+    allMatches = allMatches.concat(r.value);
   });
 
   logger.info('Live ratings computed for ' + Object.keys(merged).length + ' teams from real results');
   logger.info('Crests/flags collected for ' + Object.keys(crests).length + ' teams');
   cache.set(ck, merged, 43200);
   cache.set('fd:allCrests', crests, 43200);
+  cache.set('fd:allMatches', allMatches, 43200); // raw match list, for result lookups (bet settlement)
   return merged;
+}
+
+/**
+ * Find a finished match's final score by team names, searching the same
+ * ~100-day window already fetched for ratings/crests. This is the key
+ * advantage over The Odds API's /scores endpoint, which is capped at a
+ * 3-day lookback — bets older than 3 days would otherwise stay "pending"
+ * forever even though the match has long since finished.
+ * Returns { homeScore, awayScore, homeTeam, awayTeam } or null if not found.
+ */
+async function findFinishedMatch(homeTeamName, awayTeamName) {
+  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
+  const hn = norm(homeTeamName), an = norm(awayTeamName);
+
+  await getAllLiveRatings(); // ensures fd:allMatches is populated
+  const matches = cache.get('fd:allMatches') || [];
+
+  const found = matches.find(function (m) {
+    const gh = norm(m.homeTeam && m.homeTeam.name);
+    const ga = norm(m.awayTeam && m.awayTeam.name);
+    const teamsMatch = (gh.includes(hn) || hn.includes(gh)) && (ga.includes(an) || an.includes(ga));
+    return teamsMatch && m.score && m.score.fullTime && m.score.fullTime.home != null;
+  });
+
+  if (!found) return null;
+  return {
+    homeScore: found.score.fullTime.home,
+    awayScore: found.score.fullTime.away,
+    homeTeam: found.homeTeam.name,
+    awayTeam: found.awayTeam.name,
+  };
 }
 
 /**
@@ -250,5 +284,6 @@ module.exports = {
   computeRatingsFromMatches,
   getAllCrests,
   getTeamCrest,
+  findFinishedMatch,
   COMPETITION_MAP,
 };
