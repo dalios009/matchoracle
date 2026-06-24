@@ -530,8 +530,34 @@ def predict_game(game, sport_key="default", live_ratings=None):
     }
 
 # ── ODDS FETCHING ──────────────────────────────────────────────
+# ── CREDIT-SAVING CACHE ────────────────────────────────────────
+# The bot previously had NO caching at all on either odds or scores —
+# every single /predict, /top, or league tap made a fresh API call, and
+# /top alone loops through all 11 leagues. Combined with the per-call cost
+# (markets x regions for /odds, 2 per call for /scores with daysFrom), this
+# was very likely the dominant source of burning through 500 monthly
+# credits in under 2 days. Simple in-memory TTL cache, no extra deps needed.
+_odds_cache = {}    # sport_key -> (timestamp, data)
+_scores_cache = {}  # sport_key -> (timestamp, data)
+ODDS_CACHE_TTL = 1800       # 30 min for successful results — matches the backend
+ODDS_FAILURE_TTL = 120      # 2 min for failures/empty — don't block real recoveries long
+SCORES_CACHE_TTL = 21600    # 6 hours — a finished match's score never changes
+
+
 async def fetch_odds(sport_key):
-    for markets in ["h2h,totals,btts", "h2h,totals", "h2h"]:
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _odds_cache.get(sport_key)
+    if cached:
+        age = now - cached[0]
+        ttl = ODDS_CACHE_TTL if cached[1] else ODDS_FAILURE_TTL
+        if age < ttl:
+            return cached[1]
+
+    # 'btts' is rejected (422) for every league on this plan — confirmed in
+    # production. Try h2h+totals first (the markets that actually work),
+    # only falling back to h2h alone if even that's rejected. This avoids
+    # wasting a guaranteed-to-fail attempt on 'btts' every single call.
+    for markets in ["h2h,totals", "h2h"]:
         url = f"{ODDS_BASE}/sports/{sport_key}/odds/"
         params = {
             "apiKey": ODDS_API_KEY,
@@ -545,25 +571,36 @@ async def fetch_odds(sport_key):
             if r.status_code == 200:
                 data = r.json()
                 log.info(f"✅ {sport_key}: {len(data)} games ({markets})")
+                _odds_cache[sport_key] = (now, data)
                 return data
             elif r.status_code == 422:
                 continue
             else:
                 log.error(f"Odds API {r.status_code}: {r.text[:200]}")
+                _odds_cache[sport_key] = (now, [])
                 return []
         except Exception as e:
             log.error(f"Fetch error {sport_key}: {e}")
             return []
+    _odds_cache[sport_key] = (now, [])
     return []
 
+
 async def fetch_scores(sport_key):
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _scores_cache.get(sport_key)
+    if cached and (now - cached[0]) < SCORES_CACHE_TTL:
+        return cached[1]
     url = f"{ODDS_BASE}/sports/{sport_key}/scores/"
     params = {"apiKey": ODDS_API_KEY, "daysFrom": 3}
     try:
         async with httpx.AsyncClient() as c:
             r = await c.get(url, params=params, timeout=15)
-        return r.json() if r.status_code == 200 else []
-    except:
+        data = r.json() if r.status_code == 200 else []
+        _scores_cache[sport_key] = (now, data)
+        return data
+    except Exception:
+        _scores_cache[sport_key] = (now, [])
         return []
 
 # ── FORMATTING ─────────────────────────────────────────────────
